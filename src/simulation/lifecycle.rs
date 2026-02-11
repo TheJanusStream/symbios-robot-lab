@@ -23,7 +23,7 @@ use symbios_neat::NeatConfig;
 ///
 /// Total: 9 modules (1 body + 4×2 leg segments), 8 hinge joints.
 pub const DEFAULT_MORPHOLOGY: &str = "\
-omega: !(0.6) B(0.3, 0.6, 0.6) \
+omega: !(0.6) K(0.2, 0.3) \
 [ &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) ] \
 [ \\(90) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) ] \
 [ |(1) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) ] \
