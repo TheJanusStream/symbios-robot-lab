@@ -1,6 +1,6 @@
 use crate::core::population::Population;
 use crate::simulation::brain::{AgentJoint, RobotBrain};
-use crate::simulation::scoring::SpawnPosition;
+use crate::simulation::scoring::FitnessBaseline;
 use bevy::prelude::*;
 use bevy_symbios::materials::{MaterialPalette, setup_material_assets};
 use bevy_symbios::robot::spawn_robot;
@@ -77,7 +77,7 @@ pub fn spawn_agents(
         let spawn_transform = Transform::from_translation(spawn_pos)
             .with_rotation(Quat::from_rotation_x(-std::f32::consts::PI));
 
-        // Spawn root entity with brain and spawn position tracker
+        // Spawn root entity (container for cleanup via recursive despawn)
         let mut genome = agent.genotype.controller.clone();
         genome.break_cycles();
         let evaluator = CppnEvaluator::new(&genome);
@@ -87,11 +87,6 @@ pub fn spawn_agents(
                 Transform::from_translation(spawn_pos),
                 Visibility::default(),
                 Name::new(format!("Agent_{}", i)),
-                RobotBrain {
-                    evaluator,
-                    agent_index: i,
-                },
-                SpawnPosition(spawn_pos),
             ))
             .id();
 
@@ -113,6 +108,19 @@ pub fn spawn_agents(
             for &(joint_entity, _) in &spawned.joints {
                 root_cmds.add_child(joint_entity);
             }
+        }
+
+        // Attach brain and spawn tracker to the first module (body) entity,
+        // which is an actual physics body whose Transform updates under simulation.
+        // This is needed for fitness scoring (displacement) and brain sensing (pitch/roll).
+        if let Some(&body_entity) = spawned.modules.first() {
+            commands.entity(body_entity).insert((
+                RobotBrain {
+                    evaluator,
+                    agent_index: i,
+                },
+                FitnessBaseline(None),
+            ));
         }
 
         // Attach AgentJoint markers directly to hinge joint entities

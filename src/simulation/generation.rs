@@ -72,12 +72,8 @@ pub fn tick_generation(
 
     telemetry.best_per_generation.push(best_fitness);
 
-    // Sort by fitness (descending)
-    population.agents.sort_by(|a, b| {
-        b.fitness
-            .partial_cmp(&a.fitness)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Sort by fitness (descending); total_cmp handles NaN safely
+    population.agents.sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
 
     // Selection + Breeding
     let mut rng = Pcg64::from_rng(&mut rand::rng());

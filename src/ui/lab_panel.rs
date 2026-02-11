@@ -67,7 +67,7 @@ pub fn render_ui(
             ui.label("Population fitness:");
             let max_fitness = current_best.max(0.01);
             let mut fitnesses: Vec<f32> = population.agents.iter().map(|a| a.fitness).collect();
-            fitnesses.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            fitnesses.sort_by(|a, b| b.total_cmp(a));
 
             let available_width = ui.available_width();
             let bar_height = 8.0;
