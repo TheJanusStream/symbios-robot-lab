@@ -1,6 +1,7 @@
-use crate::core::config::LabConfig;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use symbios::System;
+use symbios::system::mutate::MutationConfig;
 use symbios_genetics::Genotype;
 use symbios_neat::NeatGenome;
 
@@ -33,8 +34,17 @@ impl AgentGenotype {
 impl Genotype for AgentGenotype {
     fn mutate<R: Rng>(&mut self, rng: &mut R, rate: f32) {
         // 1. Mutate Body (L-System Source)
-        // TODO: Use symbios::System::from_source -> mutate -> to_source() logic here
-        // similar to lsystem-explorer's PlantGenotype
+        if let Ok(mut system) = System::from_source(&self.morphology) {
+            let config = MutationConfig {
+                constant_rate: rate as f64 * 0.5,
+                constant_strength: 0.2,
+                gaussian_jitter_scale: rate as f64 * 0.3,
+                gaussian_jitter_rate: rate as f64 * 0.5,
+                ..MutationConfig::default()
+            };
+            system.mutate_with_rng(rng, &config);
+            self.morphology = system.to_source();
+        }
 
         // 2. Mutate Brain
         self.controller.mutate(rng, rate);
