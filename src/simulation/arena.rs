@@ -9,7 +9,7 @@ pub fn setup_arena(
 ) {
     // 1. The Arena Floor
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(50.0, 50.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(500.0, 500.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.1, 0.1, 0.15),
             perceptual_roughness: 0.8,
@@ -17,7 +17,7 @@ pub fn setup_arena(
         })),
         Transform::IDENTITY,
         RigidBody::Static,
-        Collider::cuboid(50.0, 0.1, 50.0), // Thin floor collider
+        Collider::cuboid(500.0, 0.1, 500.0),
     ));
 
     // 2. Lighting

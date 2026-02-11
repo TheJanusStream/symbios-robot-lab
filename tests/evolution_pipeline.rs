@@ -94,10 +94,7 @@ fn selection_pressure_increases_fitness() {
         })
         .collect();
 
-    let initial_best = population
-        .iter()
-        .map(|(_, f)| *f)
-        .fold(0.0_f32, f32::max);
+    let initial_best = population.iter().map(|(_, f)| *f).fold(0.0_f32, f32::max);
 
     // Run 5 generations of selection
     for _ in 0..5 {
@@ -131,10 +128,7 @@ fn selection_pressure_increases_fitness() {
             .collect();
     }
 
-    let final_best = population
-        .iter()
-        .map(|(_, f)| *f)
-        .fold(0.0_f32, f32::max);
+    let final_best = population.iter().map(|(_, f)| *f).fold(0.0_f32, f32::max);
 
     // With elitism, best fitness should never decrease
     assert!(

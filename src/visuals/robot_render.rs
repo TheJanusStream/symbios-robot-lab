@@ -93,7 +93,7 @@ pub fn spawn_agents(
             .id();
 
         // Spawn physics hierarchy
-        spawn_robot(
+        let spawned = spawn_robot(
             &mut commands,
             &blueprint,
             &palette,
@@ -101,12 +101,23 @@ pub fn spawn_agents(
             spawn_transform,
         );
 
-        // Attach AgentJoint markers to hinge joints
-        // Count only hinge joints to match NEAT output indices
+        // Parent all spawned entities under root for proper cleanup on despawn
+        {
+            let mut root_cmds = commands.entity(root);
+            for &module_entity in &spawned.modules {
+                root_cmds.add_child(module_entity);
+            }
+            for &(joint_entity, _) in &spawned.joints {
+                root_cmds.add_child(joint_entity);
+            }
+        }
+
+        // Attach AgentJoint markers directly to hinge joint entities
+        // so drive_motors() can query (&AgentJoint, &mut RevoluteJoint) on the same entity
         let mut joint_index = 0;
-        for joint_def in &blueprint.joints {
-            if joint_def.joint_type == JointType::Hinge {
-                commands.spawn(AgentJoint {
+        for &(joint_entity, joint_type) in &spawned.joints {
+            if joint_type == JointType::Hinge {
+                commands.entity(joint_entity).insert(AgentJoint {
                     agent_index: i,
                     joint_index,
                 });

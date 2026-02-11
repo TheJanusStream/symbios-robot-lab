@@ -46,7 +46,10 @@ pub fn render_ui(
         if gen_timer.active {
             let remaining = gen_timer.timer.remaining_secs();
             let duration = gen_timer.timer.duration().as_secs_f32();
-            ui.label(format!("Time remaining: {:.1}s / {:.1}s", remaining, duration));
+            ui.label(format!(
+                "Time remaining: {:.1}s / {:.1}s",
+                remaining, duration
+            ));
             let progress = 1.0 - (remaining / duration);
             ui.add(egui::ProgressBar::new(progress).text("Generation progress"));
         }
@@ -77,11 +80,8 @@ pub fn render_ui(
 
             for (i, &fitness) in fitnesses.iter().enumerate() {
                 let t = (fitness / max_fitness).clamp(0.0, 1.0);
-                let color = egui::Color32::from_rgb(
-                    (255.0 * (1.0 - t)) as u8,
-                    (255.0 * t) as u8,
-                    50,
-                );
+                let color =
+                    egui::Color32::from_rgb((255.0 * (1.0 - t)) as u8, (255.0 * t) as u8, 50);
                 let bar_rect = egui::Rect::from_min_size(
                     rect.min + egui::vec2(i as f32 * bar_width, 0.0),
                     egui::vec2(bar_width, bar_height),
@@ -110,12 +110,9 @@ pub fn render_ui(
         ui.heading("Controls");
         ui.add(egui::Slider::new(&mut config.time_scale, 0.0..=10.0).text("Time Scale"));
         ui.add(
-            egui::Slider::new(&mut config.generation_duration, 5.0..=60.0)
-                .text("Gen Duration (s)"),
+            egui::Slider::new(&mut config.generation_duration, 5.0..=60.0).text("Gen Duration (s)"),
         );
-        ui.add(
-            egui::Slider::new(&mut config.population_size, 2..=100).text("Population Size"),
-        );
+        ui.add(egui::Slider::new(&mut config.population_size, 2..=100).text("Population Size"));
         ui.checkbox(&mut config.auto_restart, "Auto-advance generations");
 
         if ui.button("Initialize Population").clicked() {

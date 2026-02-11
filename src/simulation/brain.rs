@@ -29,6 +29,9 @@ pub const NUM_SENSOR_INPUTS: usize = 4;
 /// Maximum motor speed (rad/s) that an output of ±1 maps to.
 const MAX_MOTOR_VELOCITY: f32 = 5.0;
 
+/// Maximum torque (N·m) each motor can apply.
+const MAX_MOTOR_TORQUE: f32 = 50.0;
+
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
 pub fn drive_motors(
     brains: Query<(&RobotBrain, &Transform)>,
@@ -58,7 +61,7 @@ pub fn drive_motors(
             if let Some(&output) = outputs.get(agent_joint.joint_index) {
                 // output is tanh-activated: [-1, 1] → motor velocity
                 joint.motor.target_velocity = output * MAX_MOTOR_VELOCITY;
-                joint.motor.max_torque = 10.0;
+                joint.motor.max_torque = MAX_MOTOR_TORQUE;
             }
         }
     }

@@ -1,7 +1,5 @@
 use crate::core::config::LabConfig;
 use crate::core::population::{Agent, Population};
-use crate::simulation::brain::{AgentJoint, RobotBrain};
-use crate::simulation::scoring::SpawnPosition;
 use crate::ui::lab_panel::Telemetry;
 use bevy::prelude::*;
 use rand::SeedableRng;
@@ -41,8 +39,6 @@ pub fn activate_timer(
     }
 }
 
-type SimEntityFilter = Or<(With<RobotBrain>, With<AgentJoint>, With<SpawnPosition>)>;
-
 /// Handles end-of-generation: selection, breeding, despawning, and re-spawning.
 pub fn tick_generation(
     mut commands: Commands,
@@ -51,7 +47,6 @@ pub fn tick_generation(
     mut population: ResMut<Population>,
     mut gen_timer: ResMut<GenerationTimer>,
     mut telemetry: ResMut<Telemetry>,
-    sim_entities: Query<Entity, SimEntityFilter>,
 ) {
     if !gen_timer.active {
         return;
@@ -118,11 +113,8 @@ pub fn tick_generation(
         });
     }
 
-    // Despawn all old entities
-    for entity in &sim_entities {
-        commands.entity(entity).despawn();
-    }
-    // Also despawn root entities stored in old population
+    // Despawn all old robot hierarchies via their root entities.
+    // Bevy 0.18 despawn is recursive — children (modules, joints) are cleaned up automatically.
     for agent in &population.agents {
         if let Some(root) = agent.root_entity {
             commands.entity(root).try_despawn();

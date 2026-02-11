@@ -80,7 +80,10 @@ fn quadruped_joints_have_limits() {
 #[test]
 fn quadruped_has_root_module() {
     let bp = build_blueprint_from_source(QUADRUPED);
-    assert!(bp.root_module.is_some(), "Blueprint should have a root module");
+    assert!(
+        bp.root_module.is_some(),
+        "Blueprint should have a root module"
+    );
 }
 
 #[test]

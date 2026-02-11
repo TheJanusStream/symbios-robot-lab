@@ -81,11 +81,7 @@ mod tests {
     }
 
     fn make_genotype(rng: &mut Pcg64) -> AgentGenotype {
-        AgentGenotype::new(
-            "omega: B(1) J B(1)".to_string(),
-            &test_neat_config(),
-            rng,
-        )
+        AgentGenotype::new("omega: B(1) J B(1)".to_string(), &test_neat_config(), rng)
     }
 
     #[test]
@@ -118,7 +114,10 @@ mod tests {
             .values()
             .map(|c| c.weight)
             .collect();
-        assert_ne!(original_weights, mutated_weights, "Mutation should change weights");
+        assert_ne!(
+            original_weights, mutated_weights,
+            "Mutation should change weights"
+        );
     }
 
     #[test]
@@ -157,7 +156,10 @@ mod tests {
 
         // Mutated morphology should still be parseable
         let system = System::from_source(&g.morphology);
-        assert!(system.is_ok(), "Mutated morphology should remain valid L-System source");
+        assert!(
+            system.is_ok(),
+            "Mutated morphology should remain valid L-System source"
+        );
     }
 
     #[test]
@@ -170,9 +172,6 @@ mod tests {
 
         assert_eq!(g.morphology, g2.morphology);
         assert_eq!(g.generation, g2.generation);
-        assert_eq!(
-            g.controller.input_ids.len(),
-            g2.controller.input_ids.len()
-        );
+        assert_eq!(g.controller.input_ids.len(), g2.controller.input_ids.len());
     }
 }
