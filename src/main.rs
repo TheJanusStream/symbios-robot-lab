@@ -48,6 +48,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                simulation::physics::sync_time_scale,
                 simulation::lifecycle::manage_generations,
                 visuals::robot_render::spawn_agents,
                 simulation::collision::assign_collision_layers,

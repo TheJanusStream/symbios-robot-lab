@@ -30,7 +30,7 @@ pub const NUM_SENSOR_INPUTS: usize = 4;
 const MAX_MOTOR_VELOCITY: f32 = 5.0;
 
 /// Maximum torque (N·m) each motor can apply.
-const MAX_MOTOR_TORQUE: f32 = 50.0;
+const MAX_MOTOR_TORQUE: f32 = 500.0;
 
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
 pub fn drive_motors(

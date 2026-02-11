@@ -37,12 +37,24 @@ pub const DEFAULT_NUM_JOINTS: usize = 8;
 pub struct SpawnRequest;
 
 pub fn manage_generations(
+    mut commands: Commands,
     mut population: ResMut<Population>,
     config: Res<LabConfig>,
     mut spawn_events: MessageReader<SpawnRequest>,
+    mut gen_timer: ResMut<crate::simulation::generation::GenerationTimer>,
 ) {
     for _ in spawn_events.read() {
         info!("Initializing Generation 0...");
+
+        // Despawn any existing robot hierarchies from a previous run
+        for agent in &population.agents {
+            if let Some(root) = agent.root_entity {
+                commands.entity(root).try_despawn();
+            }
+        }
+
+        // Reset generation timer
+        gen_timer.active = false;
 
         let mut rng = Pcg64::from_rng(&mut rand::rng());
 
