@@ -25,14 +25,28 @@ use symbios_neat::NeatConfig;
 ///   - `Si` (IMU) on the central body — provides pitch & roll (2 inputs)
 ///   - `St` (Touch) on each foot — ground contact detection (4 inputs)
 ///
+/// L-System structure:
+///   - `#define` constants parametrise joint limits, leg width, and segment length.
+///     These are the primary targets of parametric mutation.
+///   - `L` production rule defines a two-segment leg with hip + knee joints.
+///     Subject to structural mutation (insert/delete/swap modules).
+///   - 1 derivation step expands `L` → full leg sequence.
+///
 /// Total: 9 modules (1 body + 4×2 leg segments), 8 hinge joints,
 ///        1 IMU sensor, 4 touch sensors.
 pub const DEFAULT_MORPHOLOGY: &str = "\
-omega: !(0.6) K(0.2, 0.3) Si \
-[ &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ] \
-[ \\(90) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ] \
-[ |(1) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ] \
-[ /(90) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ]";
+#define hip_min -1.57
+#define hip_max 1.57
+#define hip_eff 50
+#define hip_vel 5
+#define knee_min -2.0
+#define knee_max 0.2
+#define knee_eff 30
+#define knee_vel 5
+#define lw 0.15
+#define seg 0.5
+omega: !(0.6) K(0.2, 0.3) Si [ &(90) L ] [ \\(90) &(90) L ] [ |(1) &(90) L ] [ /(90) &(90) L ]
+L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) B(seg) Jl(knee_min, knee_max, knee_eff, knee_vel) J B(seg) St";
 
 /// The number of hinge joints in the default quadruped morphology.
 /// 4 legs × 2 joints (hip + knee) = 8.

@@ -1,5 +1,5 @@
 use crate::core::population::Population;
-use crate::simulation::brain::{AgentImu, AgentJoint, AgentTouch, RobotBrain};
+use crate::simulation::brain::{AgentImu, AgentJoint, AgentModule, AgentTouch, RobotBrain};
 use crate::simulation::scoring::FitnessBaseline;
 use bevy::prelude::*;
 use bevy_symbios::materials::{MaterialPalette, setup_material_assets};
@@ -38,20 +38,14 @@ pub fn spawn_agents(
             continue;
         }
 
-        // Parse L-System morphology
-        let mut sys = System::new();
-        if !agent.genotype.morphology.contains("omega:") {
-            let _ = sys.set_axiom("A(4)");
-        }
-        for line in agent.genotype.morphology.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("omega:") {
-                let axiom = trimmed.trim_start_matches("omega:").trim();
-                let _ = sys.set_axiom(axiom);
-            } else if trimmed.contains("->") {
-                let _ = sys.add_rule(trimmed);
+        // Parse L-System morphology (handles #define, omega, and production rules)
+        let mut sys = match System::from_source(&agent.genotype.morphology) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Agent {}: failed to parse morphology: {}", i, e);
+                continue;
             }
-        }
+        };
         let _ = sys.derive(3);
 
         // Build blueprint
@@ -98,6 +92,13 @@ pub fn spawn_agents(
             &mut meshes,
             spawn_transform,
         );
+
+        // Tag all modules with AgentModule for explosion detection
+        for &module_entity in &spawned.modules {
+            commands
+                .entity(module_entity)
+                .insert(AgentModule { agent_index: i });
+        }
 
         // Parent all spawned entities under root for proper cleanup on despawn
         {

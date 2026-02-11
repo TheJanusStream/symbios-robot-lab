@@ -1,6 +1,6 @@
 use crate::core::config::LabConfig;
 use crate::core::population::Population;
-use crate::simulation::brain::RobotBrain;
+use crate::simulation::brain::{AgentModule, RobotBrain};
 use crate::simulation::generation::GenerationTimer;
 use bevy::prelude::*;
 
@@ -13,11 +13,18 @@ pub struct FitnessBaseline(pub Option<Vec3>);
 /// Fraction of the generation timer that must elapse before fitness measurement begins.
 const SETTLING_FRACTION: f32 = 1.0 / 3.0;
 
+/// If any module is farther than this from the body, the robot has exploded.
+const EXPLOSION_RADIUS: f32 = 4.0;
+
 /// Calculates fitness as horizontal displacement from the settled baseline.
 /// During the settling period (first third of a generation), fitness remains 0.
 /// Once settling ends, the body's current position is snapshotted as baseline.
+/// Robots whose parts have separated (physics explosion) are despawned immediately
+/// and receive fitness 0.
 pub fn update_fitness_scores(
+    mut commands: Commands,
     mut brains: Query<(&RobotBrain, &Transform, &mut FitnessBaseline)>,
+    modules: Query<(&AgentModule, &Transform), Without<RobotBrain>>,
     mut population: ResMut<Population>,
     gen_timer: Res<GenerationTimer>,
     config: Res<LabConfig>,
@@ -30,20 +37,42 @@ pub fn update_fitness_scores(
     let pop = population.bypass_change_detection();
 
     for (brain, transform, mut baseline) in &mut brains {
+        let idx = brain.agent_index;
+
         if !settled {
-            if let Some(agent) = pop.agents.get_mut(brain.agent_index) {
+            if let Some(agent) = pop.agents.get_mut(idx) {
                 agent.fitness = 0.0;
             }
             continue;
         }
 
-        // Snapshot baseline on first frame after settling
-        let base = *baseline.0.get_or_insert(transform.translation);
+        // Detect physics explosion: any module too far from body → fitness 0
+        let body_pos = transform.translation;
+        let exploded = !body_pos.is_finite()
+            || modules.iter().any(|(m, tf)| {
+                m.agent_index == idx
+                    && (!tf.translation.is_finite()
+                        || tf.translation.distance(body_pos) > EXPLOSION_RADIUS)
+            });
 
-        let displacement = transform.translation - base;
+        if exploded {
+            if let Some(agent) = pop.agents.get_mut(idx) {
+                agent.fitness = 0.0;
+                // Despawn the entire robot hierarchy immediately
+                if let Some(root) = agent.root_entity.take() {
+                    commands.entity(root).try_despawn();
+                }
+            }
+            continue;
+        }
+
+        // Snapshot baseline on first frame after settling
+        let base = *baseline.0.get_or_insert(body_pos);
+
+        let displacement = body_pos - base;
         let fitness = Vec2::new(displacement.x, displacement.z).length();
 
-        if let Some(agent) = pop.agents.get_mut(brain.agent_index) {
+        if let Some(agent) = pop.agents.get_mut(idx) {
             agent.fitness = if fitness.is_finite() { fitness } else { 0.0 };
         }
     }
