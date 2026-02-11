@@ -44,18 +44,35 @@ fn main() {
         )
         // UI (egui pass)
         .add_systems(EguiPrimaryContextPass, ui::lab_panel::render_ui)
-        // Update
+        // Update — ordered pipeline to prevent race conditions between
+        // population changes, entity spawning, and physics evaluation.
+        .add_systems(
+            Update,
+            (
+                // 1. Population lifecycle: despawn old / create new population
+                (
+                    simulation::lifecycle::manage_generations,
+                    simulation::generation::tick_generation,
+                ),
+                // 2. React to population changes: spawn entities, start timer
+                (
+                    visuals::robot_render::spawn_agents,
+                    simulation::generation::activate_timer,
+                ),
+                // 3. Tag newly spawned entities
+                simulation::collision::assign_collision_layers,
+                // 4. Per-frame simulation
+                (
+                    simulation::brain::drive_motors,
+                    simulation::scoring::update_fitness_scores,
+                ),
+            )
+                .chain(),
+        )
         .add_systems(
             Update,
             (
                 simulation::physics::sync_time_scale,
-                simulation::lifecycle::manage_generations,
-                visuals::robot_render::spawn_agents,
-                simulation::collision::assign_collision_layers,
-                simulation::brain::drive_motors,
-                simulation::scoring::update_fitness_scores,
-                simulation::generation::activate_timer,
-                simulation::generation::tick_generation,
                 visuals::ui::click_to_follow,
                 visuals::ui::follow_target,
                 bevy_symbios::materials::sync_material_properties,
