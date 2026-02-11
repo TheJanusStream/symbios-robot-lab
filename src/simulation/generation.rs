@@ -77,7 +77,8 @@ pub fn tick_generation(
 
     // Selection + Breeding
     let mut rng = Pcg64::from_rng(&mut rand::rng());
-    let elite_count = (config.population_size / 5).max(1); // Top 20%
+    let current_len = population.agents.len();
+    let elite_count = (config.population_size / 5).max(1).min(current_len);
     let mutation_rate = 0.3;
 
     let mut next_gen: Vec<Agent> = Vec::with_capacity(config.population_size);
@@ -92,7 +93,7 @@ pub fn tick_generation(
     }
 
     // Fill remaining slots via crossover + mutation from top 50%
-    let parent_pool_size = (config.population_size / 2).max(2);
+    let parent_pool_size = (config.population_size / 2).max(2).min(current_len);
     while next_gen.len() < config.population_size {
         let p1 = rand::random_range(0..parent_pool_size);
         let p2 = rand::random_range(0..parent_pool_size);
