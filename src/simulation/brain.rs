@@ -33,6 +33,10 @@ const MAX_MOTOR_VELOCITY: f32 = 15.0;
 const MAX_MOTOR_TORQUE: f32 = 5000.0;
 
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
+///
+/// Two-pass approach to avoid O(N×M) nested iteration:
+///   1. Evaluate all brains and index outputs by agent_index.
+///   2. Iterate joints once, looking up pre-computed outputs.
 pub fn drive_motors(
     brains: Query<(&RobotBrain, &Transform)>,
     mut joints: Query<(&AgentJoint, &mut RevoluteJoint)>,
@@ -40,29 +44,35 @@ pub fn drive_motors(
 ) {
     let t = time.elapsed_secs();
 
+    // Pass 1: evaluate each brain and store outputs by agent index
+    let mut motor_outputs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(brains.iter().len());
     for (brain, root_tf) in &brains {
-        // Build sensor inputs
         let forward = root_tf.forward();
         let up = root_tf.up();
-        // Pitch: angle between forward vector and horizontal plane
         let pitch = forward.y.asin();
-        // Roll: angle between up vector and world up
         let roll = up.x.atan2(up.y);
 
         let inputs = [t.sin(), t.cos(), pitch, roll];
-
         let outputs = brain.evaluator.evaluate(&inputs);
+        motor_outputs.push((brain.agent_index, outputs));
+    }
 
-        // Apply outputs to matching joints
-        for (agent_joint, mut joint) in &mut joints {
-            if agent_joint.agent_index != brain.agent_index {
-                continue;
-            }
-            if let Some(&output) = outputs.get(agent_joint.joint_index) {
-                // output is tanh-activated: [-1, 1] → motor velocity
-                joint.motor.target_velocity = output * MAX_MOTOR_VELOCITY;
-                joint.motor.max_torque = MAX_MOTOR_TORQUE;
-            }
+    // Build a lookup: agent_index → &[f32] outputs
+    // Agent indices are dense 0..N, so a Vec lookup is faster than HashMap.
+    let max_index = motor_outputs.iter().map(|(i, _)| *i).max().unwrap_or(0);
+    let mut output_table: Vec<Option<&[f32]>> = vec![None; max_index + 1];
+    for (idx, outputs) in &motor_outputs {
+        output_table[*idx] = Some(outputs.as_slice());
+    }
+
+    // Pass 2: iterate joints once, apply pre-computed motor commands
+    for (agent_joint, mut joint) in &mut joints {
+        if let Some(Some(&output)) = output_table
+            .get(agent_joint.agent_index)
+            .and_then(|outputs| outputs.map(|o| o.get(agent_joint.joint_index)))
+        {
+            joint.motor.target_velocity = output * MAX_MOTOR_VELOCITY;
+            joint.motor.max_torque = MAX_MOTOR_TORQUE;
         }
     }
 }

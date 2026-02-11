@@ -25,10 +25,13 @@ pub fn update_fitness_scores(
     let settled = gen_timer.active
         && gen_timer.timer.elapsed_secs() >= config.generation_duration * SETTLING_FRACTION;
 
+    // Bypass change detection: fitness updates are internal bookkeeping,
+    // not structural changes that spawn_agents needs to react to.
+    let pop = population.bypass_change_detection();
+
     for (brain, transform, mut baseline) in &mut brains {
         if !settled {
-            // Still in settling period — no fitness yet
-            if let Some(agent) = population.agents.get_mut(brain.agent_index) {
+            if let Some(agent) = pop.agents.get_mut(brain.agent_index) {
                 agent.fitness = 0.0;
             }
             continue;
@@ -40,7 +43,7 @@ pub fn update_fitness_scores(
         let displacement = transform.translation - base;
         let fitness = Vec2::new(displacement.x, displacement.z).length();
 
-        if let Some(agent) = population.agents.get_mut(brain.agent_index) {
+        if let Some(agent) = pop.agents.get_mut(brain.agent_index) {
             agent.fitness = if fitness.is_finite() { fitness } else { 0.0 };
         }
     }
