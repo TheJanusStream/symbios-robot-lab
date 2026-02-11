@@ -90,18 +90,85 @@ pub fn render_ui(
             }
         }
 
-        // Generation history
-        if !telemetry.best_per_generation.is_empty() {
+        // Generation history graph
+        if telemetry.best_per_generation.len() >= 2 {
             ui.separator();
             ui.label("Best fitness per generation:");
-            let history: String = telemetry
-                .best_per_generation
+
+            let data = &telemetry.best_per_generation;
+            let max_val = data.iter().copied().fold(0.01_f32, f32::max);
+            let graph_width = ui.available_width();
+            let graph_height = 80.0;
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(graph_width, graph_height),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter_at(rect);
+
+            // Background
+            painter.rect_filled(rect, 4.0, egui::Color32::from_gray(30));
+
+            // Horizontal grid lines (25%, 50%, 75%)
+            for frac in [0.25, 0.5, 0.75] {
+                let y = rect.max.y - frac * graph_height;
+                painter.line_segment(
+                    [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+                    egui::Stroke::new(0.5, egui::Color32::from_gray(50)),
+                );
+            }
+
+            // Plot line
+            let n = data.len();
+            let x_step = graph_width / (n - 1).max(1) as f32;
+            let points: Vec<egui::Pos2> = data
                 .iter()
                 .enumerate()
-                .map(|(i, f)| format!("G{}: {:.1}", i, f))
-                .collect::<Vec<_>>()
-                .join(" | ");
-            ui.label(history);
+                .map(|(i, &v)| {
+                    let x = rect.min.x + i as f32 * x_step;
+                    let y = rect.max.y - (v / max_val) * graph_height;
+                    egui::pos2(x, y)
+                })
+                .collect();
+
+            for window in points.windows(2) {
+                painter.line_segment(
+                    [window[0], window[1]],
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 200, 120)),
+                );
+            }
+
+            // Tooltip on hover
+            if let Some(hover_pos) = response.hover_pos() {
+                let rel_x = hover_pos.x - rect.min.x;
+                let hovered_gen = ((rel_x / x_step).round() as usize).min(n - 1);
+                let val = data[hovered_gen];
+                response.on_hover_ui(|ui| {
+                    ui.label(format!("Gen {}: {:.2}", hovered_gen, val));
+                });
+            }
+
+            // Axis labels
+            painter.text(
+                rect.min + egui::vec2(2.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                format!("{:.1}", max_val),
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
+            painter.text(
+                egui::pos2(rect.min.x + 2.0, rect.max.y - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                "0",
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
+            painter.text(
+                egui::pos2(rect.max.x - 2.0, rect.max.y - 2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("G{}", n - 1),
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
         }
 
         ui.separator();
