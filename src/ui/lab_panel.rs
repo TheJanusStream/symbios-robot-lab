@@ -58,8 +58,8 @@ pub fn render_ui(
 
         // Fitness telemetry
         ui.heading("Fitness");
-        ui.label(format!("Current best: {:.2}", current_best));
-        ui.label(format!("All-time best: {:.2}", telemetry.best_all_time));
+        ui.label(format!("Current best: {:.5}", current_best));
+        ui.label(format!("All-time best: {:.5}", telemetry.best_all_time));
 
         // Population fitness heatmap (sorted bar visualization)
         if !population.agents.is_empty() {

@@ -72,7 +72,10 @@ pub fn spawn_agents(
         let x = col as f32 * spacing - offset;
         let z = row as f32 * spacing - offset;
         let spawn_pos = Vec3::new(x, 2.0, z);
-        let spawn_transform = Transform::from_translation(spawn_pos);
+        // Rotate -180° around X
+        // maps to world -Y (downward), placing legs beneath the body.
+        let spawn_transform = Transform::from_translation(spawn_pos)
+            .with_rotation(Quat::from_rotation_x(-std::f32::consts::PI));
 
         // Spawn root entity with brain and spawn position tracker
         let mut genome = agent.genotype.controller.clone();

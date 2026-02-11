@@ -27,10 +27,10 @@ pub struct RobotBrain {
 pub const NUM_SENSOR_INPUTS: usize = 4;
 
 /// Maximum motor speed (rad/s) that an output of ±1 maps to.
-const MAX_MOTOR_VELOCITY: f32 = 5.0;
+const MAX_MOTOR_VELOCITY: f32 = 15.0;
 
 /// Maximum torque (N·m) each motor can apply.
-const MAX_MOTOR_TORQUE: f32 = 500.0;
+const MAX_MOTOR_TORQUE: f32 = 5000.0;
 
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
 pub fn drive_motors(

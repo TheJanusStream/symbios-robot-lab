@@ -11,10 +11,10 @@ pub struct LabConfig {
 impl Default for LabConfig {
     fn default() -> Self {
         Self {
-            population_size: 20,
+            population_size: 64,
             generation_duration: 15.0,
-            time_scale: 1.0,
-            auto_restart: false,
+            time_scale: 5.0,
+            auto_restart: true,
         }
     }
 }
@@ -26,9 +26,9 @@ mod tests {
     #[test]
     fn default_config_values() {
         let config = LabConfig::default();
-        assert_eq!(config.population_size, 20);
+        assert_eq!(config.population_size, 64);
         assert_eq!(config.generation_duration, 15.0);
-        assert_eq!(config.time_scale, 1.0);
-        assert!(!config.auto_restart);
+        assert_eq!(config.time_scale, 5.0);
+        assert!(config.auto_restart);
     }
 }
