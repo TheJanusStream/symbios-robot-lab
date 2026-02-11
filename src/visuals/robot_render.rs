@@ -1,12 +1,12 @@
 use crate::core::population::Population;
-use crate::simulation::brain::{AgentJoint, RobotBrain};
+use crate::simulation::brain::{AgentImu, AgentJoint, AgentTouch, RobotBrain};
 use crate::simulation::scoring::FitnessBaseline;
 use bevy::prelude::*;
 use bevy_symbios::materials::{MaterialPalette, setup_material_assets};
 use bevy_symbios::robot::spawn_robot;
 use symbios::System;
 use symbios_neat::CppnEvaluator;
-use symbios_robot::{JointType, RobotConfig, RobotInterpreter};
+use symbios_robot::{JointType, RobotConfig, RobotInterpreter, SensorType};
 
 pub fn setup_materials(
     commands: Commands,
@@ -133,6 +133,29 @@ pub fn spawn_agents(
                     joint_index,
                 });
                 joint_index += 1;
+            }
+        }
+
+        // Attach AgentImu / AgentTouch markers to sensor-bearing module entities
+        let mut imu_index = 0;
+        let mut touch_index = 0;
+        for &(sensor_entity, sensor_type) in &spawned.sensors {
+            match sensor_type {
+                SensorType::IMU => {
+                    commands.entity(sensor_entity).insert(AgentImu {
+                        agent_index: i,
+                        sensor_index: imu_index,
+                    });
+                    imu_index += 1;
+                }
+                SensorType::Touch => {
+                    commands.entity(sensor_entity).insert(AgentTouch {
+                        agent_index: i,
+                        sensor_index: touch_index,
+                    });
+                    touch_index += 1;
+                }
+                _ => {}
             }
         }
 

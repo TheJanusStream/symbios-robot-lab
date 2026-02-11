@@ -16,15 +16,41 @@ pub struct RobotBrain {
     pub agent_index: usize,
 }
 
+/// Marker linking an IMU-bearing module entity to its owning agent.
+/// The IMU contributes 2 inputs: pitch and roll of the module.
+#[derive(Component)]
+pub struct AgentImu {
+    pub agent_index: usize,
+    pub sensor_index: usize,
+}
+
+/// Marker linking a Touch-bearing module entity to its owning agent.
+/// Touch contributes 1 input: 1.0 if in contact, 0.0 otherwise.
+#[derive(Component)]
+pub struct AgentTouch {
+    pub agent_index: usize,
+    pub sensor_index: usize,
+}
+
+/// Number of clock inputs (sin(t), cos(t)).
+const NUM_CLOCK_INPUTS: usize = 2;
+/// Each IMU contributes 2 values (pitch, roll).
+pub const INPUTS_PER_IMU: usize = 2;
+/// Each touch sensor contributes 1 value (contact boolean).
+pub const INPUTS_PER_TOUCH: usize = 1;
+
 /// Standard inputs fed to every NEAT controller each tick:
-///   0: sin(time)    — oscillation clock
-///   1: cos(time)    — phase-shifted clock
-///   2: body pitch   — forward/backward tilt (from gravity direction)
-///   3: body roll    — left/right tilt
+///   0: sin(time)       — oscillation clock
+///   1: cos(time)       — phase-shifted clock
+///   2..2+2N: IMU data  — pitch, roll per IMU sensor
+///   2+2N..: Touch data — contact flag per touch sensor
+///
+/// For the default quadruped (1 IMU + 4 Touch):
+///   Total = 2 + 2 + 4 = 8
 ///
 /// Standard outputs (one per joint):
 ///   Each output is tanh-activated → [-1, 1], mapped to target_velocity.
-pub const NUM_SENSOR_INPUTS: usize = 4;
+pub const NUM_SENSOR_INPUTS: usize = NUM_CLOCK_INPUTS + INPUTS_PER_IMU + 4 * INPUTS_PER_TOUCH;
 
 /// Maximum motor speed (rad/s) that an output of ±1 maps to.
 const MAX_MOTOR_VELOCITY: f32 = 15.0;
@@ -34,38 +60,92 @@ const MAX_MOTOR_TORQUE: f32 = 5000.0;
 
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
 ///
-/// Two-pass approach to avoid O(N×M) nested iteration:
-///   1. Evaluate all brains and index outputs by agent_index.
-///   2. Iterate joints once, looking up pre-computed outputs.
+/// Gathers sensor data (IMU orientation, touch contacts), feeds the NEAT
+/// network, and applies motor outputs to joints.
 pub fn drive_motors(
-    brains: Query<(&RobotBrain, &Transform)>,
+    brains: Query<&RobotBrain>,
+    imus: Query<(&AgentImu, &Transform)>,
+    touches: Query<(&AgentTouch, Option<&CollidingEntities>)>,
     mut joints: Query<(&AgentJoint, &mut RevoluteJoint)>,
     time: Res<Time>,
 ) {
     let t = time.elapsed_secs();
 
-    // Pass 1: evaluate each brain and store outputs by agent index
-    let mut motor_outputs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(brains.iter().len());
-    for (brain, root_tf) in &brains {
-        let forward = root_tf.forward();
-        let up = root_tf.up();
+    let max_index = match brains.iter().map(|b| b.agent_index).max() {
+        Some(m) => m,
+        None => return,
+    };
+
+    // Collect IMU readings per agent. Key: (agent_index, sensor_index).
+    let mut imu_data: Vec<Vec<(usize, f32, f32)>> = vec![vec![]; max_index + 1];
+    for (imu, tf) in &imus {
+        let forward = tf.forward();
+        let up = tf.up();
         let pitch = forward.y.asin();
         let roll = up.x.atan2(up.y);
-
-        let inputs = [t.sin(), t.cos(), pitch, roll];
-        let outputs = brain.evaluator.evaluate(&inputs);
-        motor_outputs.push((brain.agent_index, outputs));
+        if let Some(bucket) = imu_data.get_mut(imu.agent_index) {
+            bucket.push((imu.sensor_index, pitch, roll));
+        }
+    }
+    // Sort each bucket so sensor_index order is deterministic.
+    for bucket in &mut imu_data {
+        bucket.sort_by_key(|(idx, _, _)| *idx);
     }
 
-    // Build a lookup: agent_index → &[f32] outputs
-    // Agent indices are dense 0..N, so a Vec lookup is faster than HashMap.
-    let max_index = motor_outputs.iter().map(|(i, _)| *i).max().unwrap_or(0);
+    // Collect Touch readings per agent.
+    let mut touch_data: Vec<Vec<(usize, f32)>> = vec![vec![]; max_index + 1];
+    for (touch, colliding) in &touches {
+        let contact = match colliding {
+            Some(c) if !c.is_empty() => 1.0,
+            _ => 0.0,
+        };
+        if let Some(bucket) = touch_data.get_mut(touch.agent_index) {
+            bucket.push((touch.sensor_index, contact));
+        }
+    }
+    for bucket in &mut touch_data {
+        bucket.sort_by_key(|(idx, _)| *idx);
+    }
+
+    // Evaluate each brain with assembled inputs and store motor outputs.
+    let mut motor_outputs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(brains.iter().len());
+    for brain in &brains {
+        let idx = brain.agent_index;
+        let mut inputs = Vec::with_capacity(NUM_SENSOR_INPUTS);
+
+        // Clock
+        inputs.push(t.sin());
+        inputs.push(t.cos());
+
+        // IMU data (pitch, roll per sensor)
+        if let Some(bucket) = imu_data.get(idx) {
+            for &(_, pitch, roll) in bucket {
+                inputs.push(pitch);
+                inputs.push(roll);
+            }
+        }
+
+        // Touch data (contact per sensor)
+        if let Some(bucket) = touch_data.get(idx) {
+            for &(_, contact) in bucket {
+                inputs.push(contact);
+            }
+        }
+
+        // Pad to expected size if sensors are missing (shouldn't happen with correct morphology).
+        inputs.resize(NUM_SENSOR_INPUTS, 0.0);
+
+        let outputs = brain.evaluator.evaluate(&inputs);
+        motor_outputs.push((idx, outputs));
+    }
+
+    // Build lookup: agent_index → &[f32] outputs
     let mut output_table: Vec<Option<&[f32]>> = vec![None; max_index + 1];
     for (idx, outputs) in &motor_outputs {
         output_table[*idx] = Some(outputs.as_slice());
     }
 
-    // Pass 2: iterate joints once, apply pre-computed motor commands
+    // Apply motor commands to joints.
     for (agent_joint, mut joint) in &mut joints {
         if let Some(Some(&output)) = output_table
             .get(agent_joint.agent_index)

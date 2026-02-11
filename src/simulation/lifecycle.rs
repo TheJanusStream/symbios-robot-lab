@@ -21,13 +21,18 @@ use symbios_neat::NeatConfig;
 ///       [leg]
 /// ```
 ///
-/// Total: 9 modules (1 body + 4×2 leg segments), 8 hinge joints.
+/// Sensors:
+///   - `Si` (IMU) on the central body — provides pitch & roll (2 inputs)
+///   - `St` (Touch) on each foot — ground contact detection (4 inputs)
+///
+/// Total: 9 modules (1 body + 4×2 leg segments), 8 hinge joints,
+///        1 IMU sensor, 4 touch sensors.
 pub const DEFAULT_MORPHOLOGY: &str = "\
-omega: !(0.6) K(0.2, 0.3) \
-[ &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) ] \
-[ \\(90) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) ] \
-[ |(1) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) ] \
-[ /(90) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) ]";
+omega: !(0.6) K(0.2, 0.3) Si \
+[ &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ] \
+[ \\(90) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ] \
+[ |(1) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ] \
+[ /(90) &(90) Jl(-1.57, 1.57, 50, 5) J !(0.15) B(0.5) Jl(-2.0, 0.2, 30, 5) J B(0.5) St ]";
 
 /// The number of hinge joints in the default quadruped morphology.
 /// 4 legs × 2 joints (hip + knee) = 8.
