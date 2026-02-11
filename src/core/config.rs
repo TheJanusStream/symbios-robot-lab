@@ -18,3 +18,17 @@ impl Default for LabConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_values() {
+        let config = LabConfig::default();
+        assert_eq!(config.population_size, 20);
+        assert_eq!(config.generation_duration, 15.0);
+        assert_eq!(config.time_scale, 1.0);
+        assert!(!config.auto_restart);
+    }
+}
