@@ -164,6 +164,160 @@ L -> J B(len) J B(len)";
 }
 
 // ---------------------------------------------------------------------------
+// Morphology pool: all initial morphologies must parse and produce valid robots
+// ---------------------------------------------------------------------------
+
+const CENTIPEDE: &str = "\
+#define jmin -1.2
+#define jmax 1.2
+#define eff 40
+#define vel 5
+#define lw 0.12
+#define seg 0.4
+omega: !(0.4) K(0.15, 0.25) Si S
+S -> Jl(jmin, jmax, eff, vel) J B(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) B(seg) St ] [ /(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) B(seg) St ] S";
+
+const HEXAPOD: &str = "\
+#define jmin -1.57
+#define jmax 1.57
+#define eff 40
+#define vel 5
+#define lw 0.12
+#define seg 0.4
+omega: !(0.5) K(0.2, 0.35) Si [ &(90) L ] [ \\(60) &(90) L ] [ \\(120) &(90) L ] [ |(1) &(90) L ] [ /(120) &(90) L ] [ /(60) &(90) L ]
+L -> Jl(jmin, jmax, eff, vel) J !(lw) B(seg) Jl(jmin, jmax, eff, vel) J B(seg) St";
+
+const SNAKE: &str = "\
+#define jmin -0.8
+#define jmax 0.8
+#define eff 30
+#define vel 8
+#define seg 0.35
+omega: !(0.3) K(0.15, 0.2) Si St S
+S -> Jl(jmin, jmax, eff, vel) J B(seg) St S";
+
+const BIPED: &str = "\
+#define hip_min -1.57
+#define hip_max 1.57
+#define eff 60
+#define vel 5
+#define knee_min -2.0
+#define knee_max 0.2
+#define keff 40
+#define kvel 5
+#define lw 0.18
+#define seg 0.6
+omega: !(0.5) K(0.25, 0.4) Si [ &(90) L ] [ |(1) &(90) L ]
+L -> Jl(hip_min, hip_max, eff, vel) J !(lw) B(seg) Jl(knee_min, knee_max, keff, kvel) J B(seg) St";
+
+const STARFISH: &str = "\
+#define jmin -1.0
+#define jmax 1.0
+#define eff 35
+#define vel 5
+#define seg 0.5
+omega: !(0.5) K(0.2, 0.2) Si [ &(90) A ] [ \\(72) &(90) A ] [ \\(144) &(90) A ] [ /(144) &(90) A ] [ /(72) &(90) A ]
+A -> Jl(jmin, jmax, eff, vel) J B(seg) St";
+
+/// Validate that every morphology in the pool parses, derives, and produces
+/// a non-trivial robot with at least 1 module, 1 joint, and 1 sensor.
+#[test]
+fn morphology_pool_all_valid() {
+    let pool = [
+        ("quadruped", QUADRUPED),
+        ("centipede", CENTIPEDE),
+        ("hexapod", HEXAPOD),
+        ("snake", SNAKE),
+        ("biped", BIPED),
+        ("starfish", STARFISH),
+    ];
+
+    for (name, source) in &pool {
+        let bp = build_blueprint_from_source(source);
+        let hinges = count_hinge_joints(&bp);
+        let imus = count_sensors(&bp, SensorType::IMU);
+        let touches = count_sensors(&bp, SensorType::Touch);
+
+        assert!(
+            bp.modules.len() >= 2,
+            "{}: expected at least 2 modules, got {}",
+            name,
+            bp.modules.len()
+        );
+        assert!(
+            hinges >= 1,
+            "{}: expected at least 1 hinge joint, got {}",
+            name,
+            hinges
+        );
+        assert!(
+            imus >= 1,
+            "{}: expected at least 1 IMU, got {}",
+            name,
+            imus
+        );
+        assert!(
+            touches >= 1,
+            "{}: expected at least 1 touch sensor, got {}",
+            name,
+            touches
+        );
+
+        println!(
+            "  {}: {} modules, {} hinges, {} IMUs, {} touch",
+            name,
+            bp.modules.len(),
+            hinges,
+            imus,
+            touches
+        );
+    }
+}
+
+#[test]
+fn centipede_has_recursive_segments() {
+    let bp = build_blueprint_from_source(CENTIPEDE);
+    // 3 derivation steps → 3 spine segments + 3×2 leg segments + 1 body = 10 modules
+    // Each spine segment has 1 spine joint + 2 leg joints = 3 hinges per segment = 9 total
+    assert!(bp.modules.len() >= 7, "Centipede should have multiple segments");
+    assert!(count_hinge_joints(&bp) >= 6, "Centipede should have multiple joints");
+}
+
+#[test]
+fn hexapod_has_six_legs() {
+    let bp = build_blueprint_from_source(HEXAPOD);
+    assert_eq!(
+        count_sensors(&bp, SensorType::Touch),
+        6,
+        "Hexapod should have 6 touch sensors (one per foot)"
+    );
+    // 6 legs × 2 joints = 12
+    assert_eq!(count_hinge_joints(&bp), 12, "Hexapod should have 12 hinge joints");
+}
+
+#[test]
+fn biped_has_two_legs() {
+    let bp = build_blueprint_from_source(BIPED);
+    assert_eq!(
+        count_sensors(&bp, SensorType::Touch),
+        2,
+        "Biped should have 2 touch sensors"
+    );
+    assert_eq!(count_hinge_joints(&bp), 4, "Biped should have 4 hinge joints");
+}
+
+#[test]
+fn starfish_has_five_arms() {
+    let bp = build_blueprint_from_source(STARFISH);
+    assert_eq!(
+        count_sensors(&bp, SensorType::Touch),
+        5,
+        "Starfish should have 5 touch sensors"
+    );
+    assert_eq!(count_hinge_joints(&bp), 5, "Starfish should have 5 hinge joints");
+}
+
+// ---------------------------------------------------------------------------
 // Mutation stability
 // ---------------------------------------------------------------------------
 
