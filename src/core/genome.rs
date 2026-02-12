@@ -16,6 +16,13 @@ pub struct AgentGenotype {
 
     /// Shared metrics
     pub generation: usize,
+
+    /// Cached brain topology `(num_inputs, num_outputs)` derived from the
+    /// morphology's L-System. Avoids re-parsing the L-System every time the
+    /// counts are needed (e.g. at generation boundaries and spawn).
+    /// `None` means "not yet computed" — will be derived on first use.
+    #[serde(skip)]
+    pub cached_topology: Option<(usize, usize)>,
 }
 
 impl AgentGenotype {
@@ -28,6 +35,7 @@ impl AgentGenotype {
             morphology,
             controller: NeatGenome::fully_connected(neat_config.clone(), rng),
             generation: 0,
+            cached_topology: Some((neat_config.num_inputs, neat_config.num_outputs)),
         }
     }
 }
@@ -85,6 +93,7 @@ impl Genotype for AgentGenotype {
             morphology,
             controller: self.controller.crossover(&other.controller, rng),
             generation: self.generation.max(other.generation) + 1,
+            cached_topology: None,
         }
     }
 }

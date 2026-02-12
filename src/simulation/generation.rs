@@ -195,21 +195,25 @@ pub fn tick_generation(
         child.generation = generation + 1;
 
         // Derive NEAT brain topology for the (potentially mutated) morphology.
+        // Cache the result so spawn_agents can skip re-derivation.
         // If parsing fails, keep the parent's genome dimensions unchanged.
-        let neat_config = derive_brain_topology(&child.morphology).map(|(ni, no)| NeatConfig {
-            num_inputs: ni,
-            num_outputs: no,
-            output_activation: symbios_neat::Activation::Tanh,
-            ..NeatConfig::default()
-        });
+        let topology = derive_brain_topology(&child.morphology);
+        child.cached_topology = topology;
 
-        // If morphology changed topology, rebuild the NEAT genome to match.
-        // Otherwise keep the inherited (and potentially mutated) genome.
-        if let Some(cfg) = neat_config.filter(|c| {
-            c.num_inputs != child.controller.input_ids.len()
-                || c.num_outputs != child.controller.output_ids.len()
-        }) {
-            child.controller = symbios_neat::NeatGenome::fully_connected(cfg, &mut rng);
+        if let Some((ni, no)) = topology {
+            // If morphology changed topology, rebuild the NEAT genome to match.
+            // Otherwise keep the inherited (and potentially mutated) genome.
+            if ni != child.controller.input_ids.len()
+                || no != child.controller.output_ids.len()
+            {
+                let cfg = NeatConfig {
+                    num_inputs: ni,
+                    num_outputs: no,
+                    output_activation: symbios_neat::Activation::Tanh,
+                    ..NeatConfig::default()
+                };
+                child.controller = symbios_neat::NeatGenome::fully_connected(cfg, &mut rng);
+            }
         }
 
         next_gen.push(Agent {

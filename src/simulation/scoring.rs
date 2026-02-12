@@ -31,6 +31,7 @@ const MAX_Y: f32 = 20.0;
 /// Once settling ends, the body's current position is snapshotted as baseline.
 /// Robots whose parts have separated (physics explosion) are despawned immediately
 /// and receive fitness 0.
+#[allow(clippy::too_many_arguments)]
 pub fn update_fitness_scores(
     mut commands: Commands,
     mut brains: Query<(&RobotBrain, &Transform, &mut FitnessBaseline)>,
@@ -38,6 +39,8 @@ pub fn update_fitness_scores(
     mut population: ResMut<Population>,
     gen_timer: Res<GenerationTimer>,
     config: Res<LabConfig>,
+    mut exploded_flags: Local<Vec<bool>>,
+    mut body_positions: Local<Vec<Option<Vec3>>>,
 ) {
     let settled = gen_timer.active
         && gen_timer.timer.elapsed_secs() >= config.generation_duration * SETTLING_FRACTION;
@@ -46,15 +49,47 @@ pub fn update_fitness_scores(
     // not structural changes that spawn_agents needs to react to.
     let pop = population.bypass_change_detection();
 
-    for (brain, transform, mut baseline) in &mut brains {
-        let idx = brain.agent_index;
-
-        if !settled {
-            if let Some(agent) = pop.agents.get_mut(idx) {
+    if !settled {
+        for (brain, _, _) in &brains {
+            if let Some(agent) = pop.agents.get_mut(brain.agent_index) {
                 agent.fitness = 0.0;
             }
+        }
+        return;
+    }
+
+    // Collect body positions from brains (one pass over brains).
+    let agent_count = pop.agents.len();
+    body_positions.clear();
+    body_positions.resize(agent_count, None);
+    for (brain, transform, _) in &brains {
+        if brain.agent_index < agent_count {
+            body_positions[brain.agent_index] = Some(transform.translation);
+        }
+    }
+
+    // Single pass over all modules to flag exploded agents.
+    exploded_flags.clear();
+    exploded_flags.resize(agent_count, false);
+    for (module, tf, vel) in &modules {
+        let idx = module.agent_index;
+        if idx >= agent_count || exploded_flags[idx] {
             continue;
         }
+        if !tf.translation.is_finite() || vel.length_squared() > MAX_MODULE_SPEED * MAX_MODULE_SPEED
+        {
+            exploded_flags[idx] = true;
+            continue;
+        }
+        if let Some(body_pos) = body_positions[idx]
+            && tf.translation.distance_squared(body_pos) > EXPLOSION_RADIUS * EXPLOSION_RADIUS
+        {
+            exploded_flags[idx] = true;
+        }
+    }
+
+    for (brain, transform, mut baseline) in &mut brains {
+        let idx = brain.agent_index;
 
         // Detect physics explosion via multiple signals:
         // 1. NaN/Inf position  2. Out-of-bounds  3. Module drift  4. Excessive velocity
@@ -62,12 +97,7 @@ pub fn update_fitness_scores(
         let exploded = !body_pos.is_finite()
             || body_pos.y < MIN_Y
             || body_pos.y > MAX_Y
-            || modules.iter().any(|(m, tf, vel)| {
-                m.agent_index == idx
-                    && (!tf.translation.is_finite()
-                        || tf.translation.distance(body_pos) > EXPLOSION_RADIUS
-                        || vel.length() > MAX_MODULE_SPEED)
-            });
+            || exploded_flags.get(idx).copied().unwrap_or(false);
 
         if exploded {
             if let Some(agent) = pop.agents.get_mut(idx) {
