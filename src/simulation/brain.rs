@@ -72,7 +72,7 @@ pub fn compute_num_inputs(num_imus: usize, num_touches: usize) -> usize {
 const MAX_MOTOR_VELOCITY: f32 = 5.0;
 
 /// Maximum torque (N·m) each motor can apply.
-const MAX_MOTOR_TORQUE: f32 = 1000.0;
+const MAX_MOTOR_TORQUE: f32 = 500.0;
 
 /// Persistent buffers for `drive_motors`, reused across frames to avoid
 /// per-frame heap allocation.

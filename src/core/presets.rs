@@ -10,8 +10,7 @@
 ///   - `Si` = IMU sensor, `St` = touch sensor, `Jl(...)` = limited hinge joint
 pub const MORPHOLOGY_POOL: &[&str] = &[
     // ── Quadruped ──────────────────────────────────────────────────────
-    // 4 legs at 90° intervals, 2 DOF per leg (hip + knee).
-    // 9 modules, 8 joints, 1 IMU, 4 touch.
+    // 4 legs at 90° intervals, 1-3 DOF per leg.
     "\
 #define hip_min -1.57
 #define hip_max 1.57
@@ -22,33 +21,38 @@ pub const MORPHOLOGY_POOL: &[&str] = &[
 #define knee_eff 30
 #define knee_vel 5
 #define lw 0.15
-#define seg 0.5
+#define seg 1.5
 omega: !(0.6) K(0.2, 0.3) Si [ &(90) L ] [ \\(90) &(90) L ] [ |(1) &(90) L ] [ /(90) &(90) L ]
-L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg) St",
+0.3 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) St
+0.4 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/2.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/2.0) St
+0.3 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) St",
     // ── Centipede ──────────────────────────────────────────────────────
-    // Recursive spine: each derivation adds a segment with 2 lateral legs.
-    // 3 derivations → 3 spine segments + 6 legs. 10 modules, 9 joints.
+    // Recursive spine: each derivation adds a segment, with 0-2 lateral legs.
     "\
 #define jmin -1.2
 #define jmax 1.2
 #define eff 40
 #define vel 5
 #define lw 0.12
-#define seg 0.4
+#define seg 1.0
 omega: !(0.4) K(0.15, 0.25) Si S
-S -> Jl(jmin, jmax, eff, vel) J K(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] [ /(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] S",
+0.3 : S -> Jl(jmin, jmax, eff, vel) J K(seg) S
+0.15 : S -> Jl(jmin, jmax, eff, vel) J K(seg) [ /(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] S
+0.15 : S -> Jl(jmin, jmax, eff, vel) J K(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] S
+0.4 : S -> Jl(jmin, jmax, eff, vel) J K(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] [ /(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] S",
     // ── Hexapod ────────────────────────────────────────────────────────
-    // 6 legs at 60° intervals, 2 DOF per leg.
-    // 13 modules, 12 joints, 1 IMU, 6 touch.
+    // 6 legs at 60° intervals, 1-3 DOF per leg.
     "\
 #define jmin -1.57
 #define jmax 1.57
 #define eff 40
 #define vel 5
 #define lw 0.12
-#define seg 0.4
+#define seg 1.0
 omega: !(0.5) K(0.2, 0.35) Si [ &(90) L ] [ \\(60) &(90) L ] [ \\(120) &(90) L ] [ |(1) &(90) L ] [ /(120) &(90) L ] [ /(60) &(90) L ]
-L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg) Jl(jmin, jmax, eff, vel) J K(seg) St",
+0.3 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St
+0.4 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg/2.0) Jl(jmin, jmax, eff, vel) J K(seg/2.0) St
+0.3 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg/3.0) Jl(jmin, jmax, eff, vel) J K(seg/3.0) Jl(jmin, jmax, eff, vel) J K(seg/3.0) St",
     // ── Snake ──────────────────────────────────────────────────────────
     // Legless chain of segments. Relies on body undulation for locomotion.
     // 3 derivations → 4 modules, 3 joints, 1 IMU, 4 touch.

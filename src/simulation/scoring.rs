@@ -15,7 +15,7 @@ pub struct FitnessBaseline(pub Option<Vec3>);
 const SETTLING_FRACTION: f32 = 1.0 / 3.0;
 
 /// If any module is farther than this from the body, the robot has exploded.
-const EXPLOSION_RADIUS: f32 = 4.0;
+const EXPLOSION_RADIUS: f32 = 6.0;
 
 /// If any module exceeds this speed (m/s), the robot is physics-unstable.
 const MAX_MODULE_SPEED: f32 = 50.0;
@@ -27,7 +27,7 @@ const MAX_MODULE_SPEED_SQ: f32 = MAX_MODULE_SPEED * MAX_MODULE_SPEED;
 const MIN_Y: f32 = -5.0;
 
 /// Body above this Y has been launched into the sky.
-const MAX_Y: f32 = 20.0;
+const MAX_Y: f32 = 10.0;
 
 /// Calculates fitness as horizontal displacement from the settled baseline.
 /// During the settling period (first third of a generation), fitness remains 0.
