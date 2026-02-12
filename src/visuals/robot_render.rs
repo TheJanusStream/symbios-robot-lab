@@ -1,5 +1,6 @@
 use crate::core::population::Population;
 use crate::simulation::brain::{AgentImu, AgentJoint, AgentModule, AgentTouch, RobotBrain};
+use crate::simulation::brain::{INPUTS_PER_IMU, NUM_CLOCK_INPUTS};
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::simulation::scoring::FitnessBaseline;
 use bevy::prelude::*;
@@ -97,9 +98,7 @@ pub fn spawn_agents(
 
         // Tag all modules with AgentModule for explosion detection
         for &module_entity in &spawned.modules {
-            commands
-                .entity(module_entity)
-                .insert(AgentModule);
+            commands.entity(module_entity).insert(AgentModule);
         }
 
         // Parent all spawned entities under root for proper cleanup on despawn
@@ -115,21 +114,36 @@ pub fn spawn_agents(
 
         let num_inputs = genome.input_ids.len();
 
-        // Collect entity refs for direct O(1) access in drive_motors/scoring.
-        let mut imu_entities = Vec::with_capacity(num_imus);
-        let mut touch_entities = Vec::with_capacity(num_touches);
+        // The body entity (first module) will hold the RobotBrain.
+        let body_entity = match spawned.modules.first() {
+            Some(&e) => e,
+            None => continue,
+        };
+
+        // Attach sensor components with brain_entity and input_offset so
+        // gather_sensor_inputs can iterate sensors linearly and write
+        // directly to the brain's input buffer.
+        let mut imu_index = 0usize;
+        let mut touch_index = 0usize;
         for &(sensor_entity, sensor_type) in &spawned.sensors {
             match sensor_type {
                 SensorType::IMU => {
+                    let input_offset = NUM_CLOCK_INPUTS + imu_index * INPUTS_PER_IMU;
                     commands.entity(sensor_entity).insert(AgentImu {
                         prev_linear_vel: Vec3::ZERO,
                         prev_angular_vel: Vec3::ZERO,
+                        brain_entity: body_entity,
+                        input_offset,
                     });
-                    imu_entities.push(sensor_entity);
+                    imu_index += 1;
                 }
                 SensorType::Touch => {
-                    commands.entity(sensor_entity).insert(AgentTouch);
-                    touch_entities.push(sensor_entity);
+                    let input_offset = NUM_CLOCK_INPUTS + num_imus * INPUTS_PER_IMU + touch_index;
+                    commands.entity(sensor_entity).insert(AgentTouch {
+                        brain_entity: body_entity,
+                        input_offset,
+                    });
+                    touch_index += 1;
                 }
                 _ => {}
             }
@@ -146,22 +160,18 @@ pub fn spawn_agents(
         // Module entities excluding the body (first module) for explosion checks.
         let module_entities: Vec<Entity> = spawned.modules.iter().skip(1).copied().collect();
 
-        // Attach brain to the first module (body) entity.
-        if let Some(&body_entity) = spawned.modules.first() {
-            commands.entity(body_entity).insert((
-                RobotBrain {
-                    evaluator,
-                    scratchpad,
-                    agent_index: i,
-                    num_inputs,
-                    imu_entities,
-                    touch_entities,
-                    joint_entities,
-                    module_entities,
-                },
-                FitnessBaseline(None),
-            ));
-        }
+        // Attach brain to the body entity with pre-allocated sensor input buffer.
+        commands.entity(body_entity).insert((
+            RobotBrain {
+                evaluator,
+                scratchpad,
+                agent_index: i,
+                sensor_inputs: vec![0.0; num_inputs],
+                joint_entities,
+                module_entities,
+            },
+            FitnessBaseline(None),
+        ));
 
         agent.root_entity = Some(root);
     }

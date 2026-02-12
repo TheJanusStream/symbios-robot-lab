@@ -4,11 +4,13 @@ use crate::core::population::{Agent, Population};
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::ui::lab_panel::Telemetry;
 use bevy::prelude::*;
+use bevy::tasks::ComputeTaskPool;
 use rand::SeedableRng;
 use rand_pcg::Pcg64;
 use std::collections::BTreeMap;
 use symbios_genetics::{Genotype, Phenotype};
 use symbios_neat::NeatConfig;
+use symbios_robot::RobotBlueprint;
 
 /// Tracks time remaining in the current generation.
 #[derive(Resource)]
@@ -178,26 +180,39 @@ pub fn tick_generation(
     telemetry.best_per_generation.push(best_fitness);
     telemetry.archive_coverage = archive.len();
 
-    // 2. Sample parents from archive and create offspring via mutation
+    // 2. Sample parents from archive and create offspring via mutation.
+    //    Mutation is sequential (uses RNG), but blueprint derivation is
+    //    parallelized across the ComputeTaskPool to avoid a main-thread stall.
     let mut rng = Pcg64::from_rng(&mut rand::rng());
     let mutation_rate = 0.3;
 
-    let mut next_gen: Vec<Agent> = Vec::with_capacity(config.population_size);
-
+    // 2a. Sequential: sample parents and mutate genotypes (fast, RNG-dependent)
+    let mut children: Vec<AgentGenotype> = Vec::with_capacity(config.population_size);
     for _ in 0..config.population_size {
         let parent = match archive.sample_parent(&mut rng) {
             Some(p) => p,
             None => continue,
         };
-
         let mut child = parent.clone();
         child.mutate(&mut rng, mutation_rate);
         child.generation = generation + 1;
+        children.push(child);
+    }
 
-        // Derive blueprint and brain topology for the (potentially mutated) morphology.
-        // Cache both so spawn_agents can skip re-derivation.
-        // If parsing fails, keep the parent's genome dimensions unchanged.
-        let derived = derive_blueprint(&child.morphology);
+    // 2b. Parallel: derive blueprints on the compute thread pool.
+    //     Each derive_blueprint call parses L-System, expands rules, and builds
+    //     a RobotBlueprint — the most expensive part of generation transition.
+    let pool = ComputeTaskPool::get();
+    let blueprints: Vec<Option<(RobotBlueprint, usize, usize)>> = pool.scope(|s| {
+        for child in &children {
+            let morphology = &child.morphology;
+            s.spawn(async move { derive_blueprint(morphology) });
+        }
+    });
+
+    // 2c. Sequential: assemble agents, rebuild NEAT genomes where topology changed
+    let mut next_gen: Vec<Agent> = Vec::with_capacity(children.len());
+    for (mut child, derived) in children.into_iter().zip(blueprints) {
         let cached_blueprint;
 
         if let Some((bp, ni, no)) = derived {
@@ -206,9 +221,7 @@ pub fn tick_generation(
 
             // If morphology changed topology, rebuild the NEAT genome to match.
             // Otherwise keep the inherited (and potentially mutated) genome.
-            if ni != child.controller.input_ids.len()
-                || no != child.controller.output_ids.len()
-            {
+            if ni != child.controller.input_ids.len() || no != child.controller.output_ids.len() {
                 let cfg = NeatConfig {
                     num_inputs: ni,
                     num_outputs: no,

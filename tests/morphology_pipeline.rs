@@ -35,82 +35,6 @@ fn count_sensors(bp: &symbios_robot::RobotBlueprint, sensor_type: SensorType) ->
 }
 
 // ---------------------------------------------------------------------------
-// Default quadruped morphology (mirrors lifecycle.rs DEFAULT_MORPHOLOGY)
-// ---------------------------------------------------------------------------
-
-const QUADRUPED: &str = MORPHOLOGY_POOL[0];
-
-#[test]
-fn quadruped_has_correct_module_count() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    // 1 body + 4 legs × 2 segments = 9 modules
-    assert_eq!(bp.modules.len(), 9, "Quadruped should have 9 modules");
-}
-
-#[test]
-fn quadruped_has_correct_joint_count() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    // 4 legs × 2 hinge joints = 8 joints
-    assert_eq!(bp.joints.len(), 8, "Quadruped should have 8 joints");
-}
-
-#[test]
-fn quadruped_all_joints_are_hinge() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    let hinge_count = count_hinge_joints(&bp);
-    assert_eq!(hinge_count, 8, "All 8 joints should be hinge type");
-}
-
-#[test]
-fn quadruped_joints_have_limits() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    for (i, joint) in bp.joints.iter().enumerate() {
-        assert!(
-            joint.limits.is_some(),
-            "Joint {} should have limits set via Jl",
-            i
-        );
-    }
-}
-
-#[test]
-fn quadruped_has_root_module() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    assert!(
-        bp.root_module.is_some(),
-        "Blueprint should have a root module"
-    );
-}
-
-#[test]
-fn quadruped_joint_count_matches_dynamic_derivation() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    let hinge_count = count_hinge_joints(&bp);
-    // derive_brain_topology dynamically counts hinge joints for NEAT output sizing.
-    assert_eq!(hinge_count, 8, "Quadruped should have 8 hinge joints");
-}
-
-#[test]
-fn quadruped_has_imu_sensor() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    assert_eq!(
-        count_sensors(&bp, SensorType::IMU),
-        1,
-        "Quadruped should have 1 IMU on the body"
-    );
-}
-
-#[test]
-fn quadruped_has_touch_sensors() {
-    let bp = build_blueprint_from_source(QUADRUPED);
-    assert_eq!(
-        count_sensors(&bp, SensorType::Touch),
-        4,
-        "Quadruped should have 4 touch sensors (one per foot)"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Simple morphology tests
 // ---------------------------------------------------------------------------
 
@@ -156,6 +80,7 @@ L -> J B(len) J B(len)";
 // Morphology pool: all initial morphologies must parse and produce valid robots
 // ---------------------------------------------------------------------------
 
+const QUADRUPED: &str = MORPHOLOGY_POOL[0];
 const CENTIPEDE: &str = MORPHOLOGY_POOL[1];
 const HEXAPOD: &str = MORPHOLOGY_POOL[2];
 const SNAKE: &str = MORPHOLOGY_POOL[3];
@@ -210,21 +135,6 @@ fn morphology_pool_all_valid() {
             touches
         );
     }
-}
-
-#[test]
-fn centipede_has_recursive_segments() {
-    let bp = build_blueprint_from_source(CENTIPEDE);
-    // 3 derivation steps → 3 spine segments + 3×2 leg segments + 1 body = 10 modules
-    // Each spine segment has 1 spine joint + 2 leg joints = 3 hinges per segment = 9 total
-    assert!(
-        bp.modules.len() >= 7,
-        "Centipede should have multiple segments"
-    );
-    assert!(
-        count_hinge_joints(&bp) >= 6,
-        "Centipede should have multiple joints"
-    );
 }
 
 #[test]

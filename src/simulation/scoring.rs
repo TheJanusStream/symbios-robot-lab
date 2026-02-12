@@ -29,14 +29,20 @@ const MIN_Y: f32 = -5.0;
 /// Body above this Y has been launched into the sky.
 const MAX_Y: f32 = 10.0;
 
+/// Only recalculate displacement fitness every N fixed steps.
+/// Explosion checks still run every step for safety.
+const FITNESS_CALC_INTERVAL: u32 = 4;
+
 /// Calculates fitness as horizontal displacement from the settled baseline.
 /// During the settling period (first third of a generation), fitness remains 0.
 /// Once settling ends, the body's current position is snapshotted as baseline.
 /// Robots whose parts have separated (physics explosion) are despawned immediately
 /// and receive fitness 0.
 ///
-/// Uses direct entity references from `RobotBrain.module_entities` to check only
-/// the owning agent's modules — no global scan or index-based indirection needed.
+/// Explosion checks run every fixed step. Displacement fitness is only
+/// recalculated every `FITNESS_CALC_INTERVAL` steps to reduce redundant work.
+///
+/// Runs in `FixedUpdate`, locked to the physics timestep.
 pub fn update_fitness_scores(
     mut commands: Commands,
     mut brains: Query<(&RobotBrain, &Transform, &mut FitnessBaseline)>,
@@ -44,6 +50,7 @@ pub fn update_fitness_scores(
     mut population: ResMut<Population>,
     gen_timer: Res<GenerationTimer>,
     config: Res<LabConfig>,
+    mut step_counter: Local<u32>,
 ) {
     let settled = gen_timer.active
         && gen_timer.timer.elapsed_secs() >= config.generation_duration * SETTLING_FRACTION;
@@ -58,8 +65,12 @@ pub fn update_fitness_scores(
                 agent.fitness = 0.0;
             }
         }
+        *step_counter = 0;
         return;
     }
+
+    *step_counter += 1;
+    let calc_fitness = step_counter.is_multiple_of(FITNESS_CALC_INTERVAL);
 
     for (brain, transform, mut baseline) in &mut brains {
         let idx = brain.agent_index;
@@ -91,6 +102,10 @@ pub fn update_fitness_scores(
                     commands.entity(root).try_despawn();
                 }
             }
+            continue;
+        }
+
+        if !calc_fitness {
             continue;
         }
 

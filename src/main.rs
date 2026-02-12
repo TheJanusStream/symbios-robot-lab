@@ -45,8 +45,8 @@ fn main() {
         )
         // UI (egui pass)
         .add_systems(EguiPrimaryContextPass, ui::lab_panel::render_ui)
-        // Update — ordered pipeline to prevent race conditions between
-        // population changes, entity spawning, and physics evaluation.
+        // Update — ordered pipeline for population lifecycle and spawning.
+        // Neural evaluation and scoring run in FixedUpdate (see below).
         .add_systems(
             Update,
             (
@@ -62,11 +62,18 @@ fn main() {
                 ),
                 // 3. Tag newly spawned entities
                 simulation::collision::assign_collision_layers,
-                // 4. Per-frame simulation
-                (
-                    simulation::brain::drive_motors,
-                    simulation::scoring::update_fitness_scores,
-                ),
+            )
+                .chain(),
+        )
+        // FixedUpdate — neural evaluation and scoring locked to the physics
+        // timestep. Prevents wasted CPU on frames the physics engine skips,
+        // and gives IMU sensors a stable dt for acceleration computation.
+        .add_systems(
+            FixedUpdate,
+            (
+                simulation::brain::gather_sensor_inputs,
+                simulation::brain::drive_motors,
+                simulation::scoring::update_fitness_scores,
             )
                 .chain(),
         )

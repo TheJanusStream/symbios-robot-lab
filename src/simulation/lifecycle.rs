@@ -44,7 +44,6 @@ pub fn derive_blueprint(morphology: &str) -> Option<(RobotBlueprint, usize, usiz
     Some((blueprint, num_inputs, num_outputs))
 }
 
-
 #[derive(Message)]
 pub struct SpawnRequest;
 
