@@ -1,11 +1,13 @@
 use crate::core::config::LabConfig;
 use crate::core::genome::AgentGenotype;
 use crate::core::population::{Agent, Population};
-use crate::simulation::brain::NUM_SENSOR_INPUTS;
+use crate::simulation::brain::compute_num_inputs;
 use bevy::prelude::*;
 use rand::SeedableRng;
 use rand_pcg::Pcg64;
+use symbios::System;
 use symbios_neat::NeatConfig;
+use symbios_robot::{JointType, RobotConfig, RobotInterpreter, SensorType};
 
 /// Default quadruped morphology for Generation 0.
 ///
@@ -48,9 +50,40 @@ pub const DEFAULT_MORPHOLOGY: &str = "\
 omega: !(0.6) K(0.2, 0.3) Si [ &(90) L ] [ \\(90) &(90) L ] [ |(1) &(90) L ] [ /(90) &(90) L ]
 L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) B(seg) Jl(knee_min, knee_max, knee_eff, knee_vel) J B(seg) St";
 
-/// The number of hinge joints in the default quadruped morphology.
-/// 4 legs × 2 joints (hip + knee) = 8.
-pub const DEFAULT_NUM_JOINTS: usize = 8;
+/// Derives NEAT input/output sizes from an L-System morphology string.
+///
+/// Parses the morphology, builds a blueprint, and counts IMU sensors,
+/// touch sensors, and hinge joints to determine brain topology.
+///
+/// Returns `(num_inputs, num_outputs)` or `None` if the morphology fails to parse.
+pub fn derive_brain_topology(morphology: &str) -> Option<(usize, usize)> {
+    let mut sys = System::from_source(morphology).ok()?;
+    sys.derive(3).ok()?;
+
+    let mut interpreter = RobotInterpreter::new(RobotConfig::default());
+    interpreter.populate_standard_symbols(&sys.interner);
+    let blueprint = interpreter.build_blueprint(&sys.state);
+
+    let mut num_imus = 0usize;
+    let mut num_touches = 0usize;
+    for module in blueprint.modules.values() {
+        for sensor in &module.sensors {
+            match sensor.sensor_type {
+                SensorType::IMU => num_imus += 1,
+                SensorType::Touch => num_touches += 1,
+                _ => {}
+            }
+        }
+    }
+
+    let num_outputs = blueprint
+        .joints
+        .iter()
+        .filter(|j| j.joint_type == JointType::Hinge)
+        .count();
+
+    Some((compute_num_inputs(num_imus, num_touches), num_outputs))
+}
 
 #[derive(Message)]
 pub struct SpawnRequest;
@@ -77,9 +110,15 @@ pub fn manage_generations(
 
         let mut rng = Pcg64::from_rng(&mut rand::rng());
 
+        let (num_inputs, num_outputs) =
+            derive_brain_topology(DEFAULT_MORPHOLOGY).unwrap_or_else(|| {
+                warn!("Failed to derive brain topology from default morphology, using fallback");
+                (5, 4)
+            });
+
         let neat_config = NeatConfig {
-            num_inputs: NUM_SENSOR_INPUTS,
-            num_outputs: DEFAULT_NUM_JOINTS,
+            num_inputs,
+            num_outputs,
             output_activation: symbios_neat::Activation::Tanh,
             ..NeatConfig::default()
         };

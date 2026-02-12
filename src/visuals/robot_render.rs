@@ -111,14 +111,20 @@ pub fn spawn_agents(
             }
         }
 
+        // Use the NEAT genome's actual input count so evaluate() never panics.
+        // Mutated morphologies may have more or fewer sensors than the genome
+        // was originally sized for — padding/truncation handles the mismatch.
+        let num_inputs = genome.input_ids.len();
+
         // Attach brain and spawn tracker to the first module (body) entity,
         // which is an actual physics body whose Transform updates under simulation.
-        // This is needed for fitness scoring (displacement) and brain sensing (pitch/roll).
+        // This is needed for fitness scoring (displacement) and brain sensing.
         if let Some(&body_entity) = spawned.modules.first() {
             commands.entity(body_entity).insert((
                 RobotBrain {
                     evaluator,
                     agent_index: i,
+                    num_inputs,
                 },
                 FitnessBaseline(None),
             ));

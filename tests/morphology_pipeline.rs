@@ -94,12 +94,11 @@ fn quadruped_has_root_module() {
 }
 
 #[test]
-fn quadruped_joint_count_matches_lifecycle_constant() {
+fn quadruped_joint_count_matches_dynamic_derivation() {
     let bp = build_blueprint_from_source(QUADRUPED);
     let hinge_count = count_hinge_joints(&bp);
-    // This must match DEFAULT_NUM_JOINTS in lifecycle.rs (8)
-    // which is used to size the NEAT output layer.
-    assert_eq!(hinge_count, 8, "Hinge count must match DEFAULT_NUM_JOINTS");
+    // derive_brain_topology dynamically counts hinge joints for NEAT output sizing.
+    assert_eq!(hinge_count, 8, "Quadruped should have 8 hinge joints");
 }
 
 #[test]

@@ -21,10 +21,12 @@ pub struct AgentJoint {
 pub struct RobotBrain {
     pub evaluator: CppnEvaluator,
     pub agent_index: usize,
+    /// Number of inputs the NEAT genome expects (clocks + IMU + touch).
+    pub num_inputs: usize,
 }
 
 /// Marker linking an IMU-bearing module entity to its owning agent.
-/// The IMU contributes 2 inputs: pitch and roll of the module.
+/// The IMU contributes 3 inputs: pitch, roll, and yaw of the module.
 #[derive(Component)]
 pub struct AgentImu {
     pub agent_index: usize,
@@ -40,30 +42,30 @@ pub struct AgentTouch {
 }
 
 /// Number of clock inputs (sin(t), cos(t)).
-const NUM_CLOCK_INPUTS: usize = 2;
-/// Each IMU contributes 2 values (pitch, roll).
-pub const INPUTS_PER_IMU: usize = 2;
+pub const NUM_CLOCK_INPUTS: usize = 2;
+/// Each IMU contributes 3 values (pitch, roll, yaw).
+pub const INPUTS_PER_IMU: usize = 3;
 /// Each touch sensor contributes 1 value (contact boolean).
 pub const INPUTS_PER_TOUCH: usize = 1;
 
-/// Standard inputs fed to every NEAT controller each tick:
-///   0: sin(time)       — oscillation clock
-///   1: cos(time)       — phase-shifted clock
-///   2..2+2N: IMU data  — pitch, roll per IMU sensor
-///   2+2N..: Touch data — contact flag per touch sensor
+/// Computes the total number of NEAT inputs for a given sensor topology.
 ///
-/// For the default quadruped (1 IMU + 4 Touch):
-///   Total = 2 + 2 + 4 = 8
+/// Layout:
+///   0..2:          sin(t), cos(t)  — oscillation clocks
+///   2..2+3N_imu:   pitch, roll, yaw per IMU sensor
+///   ..+N_touch:    contact flag per touch sensor
 ///
-/// Standard outputs (one per joint):
+/// Outputs (one per hinge joint):
 ///   Each output is tanh-activated → [-1, 1], mapped to target_velocity.
-pub const NUM_SENSOR_INPUTS: usize = NUM_CLOCK_INPUTS + INPUTS_PER_IMU + 4 * INPUTS_PER_TOUCH;
+pub fn compute_num_inputs(num_imus: usize, num_touches: usize) -> usize {
+    NUM_CLOCK_INPUTS + num_imus * INPUTS_PER_IMU + num_touches * INPUTS_PER_TOUCH
+}
 
 /// Maximum motor speed (rad/s) that an output of ±1 maps to.
-const MAX_MOTOR_VELOCITY: f32 = 15.0;
+const MAX_MOTOR_VELOCITY: f32 = 5.0;
 
 /// Maximum torque (N·m) each motor can apply.
-const MAX_MOTOR_TORQUE: f32 = 500.0;
+const MAX_MOTOR_TORQUE: f32 = 1000.0;
 
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
 ///
@@ -84,19 +86,20 @@ pub fn drive_motors(
     };
 
     // Collect IMU readings per agent. Key: (agent_index, sensor_index).
-    let mut imu_data: Vec<Vec<(usize, f32, f32)>> = vec![vec![]; max_index + 1];
+    let mut imu_data: Vec<Vec<(usize, f32, f32, f32)>> = vec![vec![]; max_index + 1];
     for (imu, tf) in &imus {
         let forward = tf.forward();
         let up = tf.up();
         let pitch = forward.y.asin();
         let roll = up.x.atan2(up.y);
+        let yaw = forward.x.atan2(forward.z);
         if let Some(bucket) = imu_data.get_mut(imu.agent_index) {
-            bucket.push((imu.sensor_index, pitch, roll));
+            bucket.push((imu.sensor_index, pitch, roll, yaw));
         }
     }
     // Sort each bucket so sensor_index order is deterministic.
     for bucket in &mut imu_data {
-        bucket.sort_by_key(|(idx, _, _)| *idx);
+        bucket.sort_by_key(|(idx, _, _, _)| *idx);
     }
 
     // Collect Touch readings per agent.
@@ -118,17 +121,18 @@ pub fn drive_motors(
     let mut motor_outputs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(brains.iter().len());
     for brain in &brains {
         let idx = brain.agent_index;
-        let mut inputs = Vec::with_capacity(NUM_SENSOR_INPUTS);
+        let mut inputs = Vec::with_capacity(brain.num_inputs);
 
         // Clock
         inputs.push(t.sin());
         inputs.push(t.cos());
 
-        // IMU data (pitch, roll per sensor)
+        // IMU data (pitch, roll, yaw per sensor)
         if let Some(bucket) = imu_data.get(idx) {
-            for &(_, pitch, roll) in bucket {
+            for &(_, pitch, roll, yaw) in bucket {
                 inputs.push(pitch);
                 inputs.push(roll);
+                inputs.push(yaw);
             }
         }
 
@@ -139,8 +143,8 @@ pub fn drive_motors(
             }
         }
 
-        // Pad to expected size if sensors are missing (shouldn't happen with correct morphology).
-        inputs.resize(NUM_SENSOR_INPUTS, 0.0);
+        // Pad/truncate to the NEAT genome's expected input count.
+        inputs.resize(brain.num_inputs, 0.0);
 
         let outputs = brain.evaluator.evaluate(&inputs);
         motor_outputs.push((idx, outputs));
