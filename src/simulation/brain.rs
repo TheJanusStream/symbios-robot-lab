@@ -85,6 +85,11 @@ const MAX_MOTOR_VELOCITY: f32 = 5.0;
 /// Maximum torque (N·m) each motor can apply.
 const MAX_MOTOR_TORQUE: f32 = 500.0;
 
+/// Evaluate brains every Nth fixed step. Motors hold their last commanded
+/// velocity between evaluations. This halves NEAT CPU cost while
+/// `gather_sensor_inputs` still runs every step to keep IMU data fresh.
+const BRAIN_EVAL_INTERVAL: u32 = 2;
+
 /// Persistent buffers for `drive_motors`, reused across frames to avoid
 /// per-frame heap allocation.
 #[derive(Default)]
@@ -159,13 +164,21 @@ pub fn gather_sensor_inputs(
 /// Reads from `RobotBrain.sensor_inputs` (filled by `gather_sensor_inputs`)
 /// and writes motor commands to `RevoluteJoint` components.
 ///
-/// Runs in `FixedUpdate` after `gather_sensor_inputs`, locked to the
-/// physics timestep to avoid wasted evaluations and noisy IMU inputs.
+/// Runs in `FixedUpdate` after `gather_sensor_inputs`, but only evaluates
+/// every `BRAIN_EVAL_INTERVAL` steps. Motors hold their last commanded
+/// velocity between evaluations. This halves the NEAT CPU cost — the
+/// most expensive per-frame work — without noticeably degrading locomotion.
 pub fn drive_motors(
     mut brains: Query<&mut RobotBrain>,
     mut joints: Query<&mut RevoluteJoint>,
     mut bufs: Local<DriveMotorsBuffers>,
+    mut step: Local<u32>,
 ) {
+    *step = step.wrapping_add(1);
+    if !step.is_multiple_of(BRAIN_EVAL_INTERVAL) {
+        return;
+    }
+
     bufs.motor_commands.clear();
 
     for brain in &mut brains {
