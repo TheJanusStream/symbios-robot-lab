@@ -1,5 +1,6 @@
 use crate::core::genome::AgentGenotype;
 use bevy::prelude::*;
+use symbios_robot::RobotBlueprint;
 
 #[derive(Clone)]
 pub struct Agent {
@@ -10,6 +11,8 @@ pub struct Agent {
     pub descriptor: [f32; 2],
     /// The root entity of the spawned robot in the Bevy world
     pub root_entity: Option<Entity>,
+    /// Cached blueprint from L-System derivation, avoids re-parsing at spawn.
+    pub cached_blueprint: Option<RobotBlueprint>,
 }
 
 #[derive(Resource, Default)]
@@ -46,6 +49,7 @@ mod tests {
             fitness: 0.0,
             descriptor: [0.0, 0.0],
             root_entity: None,
+            cached_blueprint: None,
         }
     }
 

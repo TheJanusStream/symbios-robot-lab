@@ -1,7 +1,7 @@
 use crate::core::config::LabConfig;
 use crate::core::genome::AgentGenotype;
 use crate::core::population::{Agent, Population};
-use crate::simulation::lifecycle::derive_brain_topology;
+use crate::simulation::lifecycle::derive_blueprint;
 use crate::ui::lab_panel::Telemetry;
 use bevy::prelude::*;
 use rand::SeedableRng;
@@ -194,13 +194,16 @@ pub fn tick_generation(
         child.mutate(&mut rng, mutation_rate);
         child.generation = generation + 1;
 
-        // Derive NEAT brain topology for the (potentially mutated) morphology.
-        // Cache the result so spawn_agents can skip re-derivation.
+        // Derive blueprint and brain topology for the (potentially mutated) morphology.
+        // Cache both so spawn_agents can skip re-derivation.
         // If parsing fails, keep the parent's genome dimensions unchanged.
-        let topology = derive_brain_topology(&child.morphology);
-        child.cached_topology = topology;
+        let derived = derive_blueprint(&child.morphology);
+        let cached_blueprint;
 
-        if let Some((ni, no)) = topology {
+        if let Some((bp, ni, no)) = derived {
+            child.cached_topology = Some((ni, no));
+            cached_blueprint = Some(bp);
+
             // If morphology changed topology, rebuild the NEAT genome to match.
             // Otherwise keep the inherited (and potentially mutated) genome.
             if ni != child.controller.input_ids.len()
@@ -214,6 +217,9 @@ pub fn tick_generation(
                 };
                 child.controller = symbios_neat::NeatGenome::fully_connected(cfg, &mut rng);
             }
+        } else {
+            child.cached_topology = None;
+            cached_blueprint = None;
         }
 
         next_gen.push(Agent {
@@ -221,6 +227,7 @@ pub fn tick_generation(
             fitness: 0.0,
             descriptor: [0.0, 0.0],
             root_entity: None,
+            cached_blueprint,
         });
     }
 

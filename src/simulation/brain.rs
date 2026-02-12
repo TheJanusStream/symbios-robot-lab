@@ -1,28 +1,33 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use symbios_neat::CppnEvaluator;
+use symbios_neat::{CppnEvaluator, EvalScratchpad};
 
 /// Marker linking a module (rigid body) entity to its owning agent.
-/// Used to detect physics explosions (parts drifting apart).
 #[derive(Component)]
-pub struct AgentModule {
-    pub agent_index: usize,
-}
+pub struct AgentModule;
 
 /// Marker linking a joint entity back to its owning agent.
 #[derive(Component)]
-pub struct AgentJoint {
-    pub agent_index: usize,
-    pub joint_index: usize,
-}
+pub struct AgentJoint;
 
-/// Holds the compiled NEAT network for a single agent.
+/// Holds the compiled NEAT network for a single agent, along with direct
+/// entity references to its sensors and joints for O(1) access.
 #[derive(Component)]
 pub struct RobotBrain {
     pub evaluator: CppnEvaluator,
+    /// Reusable scratchpad for allocation-free NEAT evaluation.
+    pub scratchpad: EvalScratchpad,
     pub agent_index: usize,
     /// Number of inputs the NEAT genome expects (clocks + IMU + touch).
     pub num_inputs: usize,
+    /// IMU sensor entities, ordered by sensor_index.
+    pub imu_entities: Vec<Entity>,
+    /// Touch sensor entities, ordered by sensor_index.
+    pub touch_entities: Vec<Entity>,
+    /// Hinge joint entities, ordered by joint_index (matches NEAT output order).
+    pub joint_entities: Vec<Entity>,
+    /// Module entities excluding the brain/body entity, for explosion checks.
+    pub module_entities: Vec<Entity>,
 }
 
 /// IMU sensor attached to a module rigid body.
@@ -34,8 +39,6 @@ pub struct RobotBrain {
 /// Previous-frame velocities are stored to compute finite-difference acceleration.
 #[derive(Component)]
 pub struct AgentImu {
-    pub agent_index: usize,
-    pub sensor_index: usize,
     pub prev_linear_vel: Vec3,
     pub prev_angular_vel: Vec3,
 }
@@ -43,10 +46,7 @@ pub struct AgentImu {
 /// Marker linking a Touch-bearing module entity to its owning agent.
 /// Touch contributes 1 input: 1.0 if in contact, 0.0 otherwise.
 #[derive(Component)]
-pub struct AgentTouch {
-    pub agent_index: usize,
-    pub sensor_index: usize,
-}
+pub struct AgentTouch;
 
 /// Number of clock inputs (sin(t), cos(t)).
 pub const NUM_CLOCK_INPUTS: usize = 2;
@@ -78,176 +78,96 @@ const MAX_MOTOR_TORQUE: f32 = 1000.0;
 /// per-frame heap allocation.
 #[derive(Default)]
 pub struct DriveMotorsBuffers {
-    /// Flat list of (agent_index, sensor_index, [6 floats]) for IMU data.
-    imu_flat: Vec<(usize, usize, [f32; 6])>,
-    /// Flat list of (agent_index, sensor_index, contact) for touch data.
-    touch_flat: Vec<(usize, usize, f32)>,
-    /// Per-agent start/end indices into `imu_flat` (sorted).
-    imu_ranges: Vec<(usize, usize)>,
-    /// Per-agent start/end indices into `touch_flat` (sorted).
-    touch_ranges: Vec<(usize, usize)>,
     /// Reusable input buffer fed to the NEAT evaluator.
     inputs: Vec<f32>,
-    /// Flat storage for all motor outputs, laid out agent-by-agent.
-    output_storage: Vec<f32>,
-    /// Per-agent (start, len) into `output_storage`.
-    output_ranges: Vec<(usize, usize)>,
+    /// Reusable output buffer written by `evaluate_into`.
+    outputs: Vec<f32>,
+    /// Collected motor commands: (joint_entity, output_value).
+    motor_commands: Vec<(Entity, f32)>,
 }
 
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
 ///
-/// Gathers sensor data (IMU acceleration, touch contacts), feeds the NEAT
-/// network, and applies motor outputs to joints.
-/// Uses `Local` buffers to avoid per-frame heap allocations.
-#[allow(clippy::too_many_arguments)]
+/// Uses direct entity references stored on `RobotBrain` for O(1) sensor/joint
+/// access, eliminating the previous per-frame global sort. The NEAT evaluator
+/// uses `evaluate_into` with a per-brain scratchpad to avoid output allocation.
 pub fn drive_motors(
-    brains: Query<&RobotBrain>,
+    mut brains: Query<&mut RobotBrain>,
     mut imus: Query<(&mut AgentImu, &LinearVelocity, &AngularVelocity)>,
-    touches: Query<(&AgentTouch, Option<&CollidingEntities>)>,
-    mut joints: Query<(&AgentJoint, &mut RevoluteJoint)>,
+    touches: Query<(Option<&CollidingEntities>,), With<AgentTouch>>,
+    mut joints: Query<&mut RevoluteJoint>,
     time: Res<Time>,
     mut bufs: Local<DriveMotorsBuffers>,
 ) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
-
-    let max_index = match brains.iter().map(|b| b.agent_index).max() {
-        Some(m) => m,
-        None => return,
-    };
-    let bucket_count = max_index + 1;
-
-    // --- Collect IMU readings into a flat buffer ---
     let inv_dt = if dt > 0.0 { 1.0 / dt } else { 0.0 };
-    bufs.imu_flat.clear();
-    for (mut imu, lin_vel, ang_vel) in &mut imus {
-        let lin_accel = (lin_vel.0 - imu.prev_linear_vel) * inv_dt;
-        let ang_accel = (ang_vel.0 - imu.prev_angular_vel) * inv_dt;
 
-        imu.prev_linear_vel = lin_vel.0;
-        imu.prev_angular_vel = ang_vel.0;
+    bufs.motor_commands.clear();
 
-        bufs.imu_flat.push((
-            imu.agent_index,
-            imu.sensor_index,
-            [
-                lin_accel.x,
-                lin_accel.y,
-                lin_accel.z,
-                ang_accel.x,
-                ang_accel.y,
-                ang_accel.z,
-            ],
-        ));
-    }
-    // Sort by (agent_index, sensor_index) so we can build contiguous ranges.
-    bufs.imu_flat
-        .sort_unstable_by_key(|(agent, sensor, _)| (*agent, *sensor));
-
-    // Build per-agent ranges into the sorted flat buffer.
-    bufs.imu_ranges.clear();
-    bufs.imu_ranges.resize(bucket_count, (0, 0));
-    {
-        let mut i = 0;
-        while i < bufs.imu_flat.len() {
-            let agent = bufs.imu_flat[i].0;
-            let start = i;
-            while i < bufs.imu_flat.len() && bufs.imu_flat[i].0 == agent {
-                i += 1;
-            }
-            if agent < bucket_count {
-                bufs.imu_ranges[agent] = (start, i);
-            }
-        }
-    }
-
-    // --- Collect Touch readings into a flat buffer ---
-    bufs.touch_flat.clear();
-    for (touch, colliding) in &touches {
-        let contact = match colliding {
-            Some(c) if !c.is_empty() => 1.0,
-            _ => 0.0,
-        };
-        bufs.touch_flat
-            .push((touch.agent_index, touch.sensor_index, contact));
-    }
-    bufs.touch_flat
-        .sort_unstable_by_key(|(agent, sensor, _)| (*agent, *sensor));
-
-    bufs.touch_ranges.clear();
-    bufs.touch_ranges.resize(bucket_count, (0, 0));
-    {
-        let mut i = 0;
-        while i < bufs.touch_flat.len() {
-            let agent = bufs.touch_flat[i].0;
-            let start = i;
-            while i < bufs.touch_flat.len() && bufs.touch_flat[i].0 == agent {
-                i += 1;
-            }
-            if agent < bucket_count {
-                bufs.touch_ranges[agent] = (start, i);
-            }
-        }
-    }
-
-    // --- Evaluate each brain, reusing the input buffer ---
-    // Destructure to get independent borrows on each field.
-    let DriveMotorsBuffers {
-        imu_flat,
-        touch_flat,
-        imu_ranges,
-        touch_ranges,
-        inputs,
-        output_storage,
-        output_ranges,
-    } = &mut *bufs;
-
-    output_storage.clear();
-    output_ranges.clear();
-    output_ranges.resize(bucket_count, (0, 0));
-
-    for brain in &brains {
-        let idx = brain.agent_index;
-        inputs.clear();
+    for brain in &mut brains {
+        bufs.inputs.clear();
 
         // Clock
-        inputs.push(t.sin());
-        inputs.push(t.cos());
+        bufs.inputs.push(t.sin());
+        bufs.inputs.push(t.cos());
 
-        // IMU data (linear accel xyz, angular accel xyz per sensor)
-        if let Some(&(start, end)) = imu_ranges.get(idx) {
-            for entry in &imu_flat[start..end] {
-                inputs.extend_from_slice(&entry.2);
+        // IMU data via direct entity refs (sorted by sensor_index at spawn)
+        for &imu_entity in &brain.imu_entities {
+            if let Ok((mut imu, lin_vel, ang_vel)) = imus.get_mut(imu_entity) {
+                let lin_accel = (lin_vel.0 - imu.prev_linear_vel) * inv_dt;
+                let ang_accel = (ang_vel.0 - imu.prev_angular_vel) * inv_dt;
+                imu.prev_linear_vel = lin_vel.0;
+                imu.prev_angular_vel = ang_vel.0;
+                bufs.inputs.extend_from_slice(&[
+                    lin_accel.x,
+                    lin_accel.y,
+                    lin_accel.z,
+                    ang_accel.x,
+                    ang_accel.y,
+                    ang_accel.z,
+                ]);
             }
         }
 
-        // Touch data (contact per sensor)
-        if let Some(&(start, end)) = touch_ranges.get(idx) {
-            for entry in &touch_flat[start..end] {
-                inputs.push(entry.2);
+        // Touch data via direct entity refs (sorted by sensor_index at spawn)
+        for &touch_entity in &brain.touch_entities {
+            if let Ok((colliding,)) = touches.get(touch_entity) {
+                let contact = match colliding {
+                    Some(c) if !c.is_empty() => 1.0,
+                    _ => 0.0,
+                };
+                bufs.inputs.push(contact);
             }
         }
 
         // Pad/truncate to the NEAT genome's expected input count.
+        let DriveMotorsBuffers {
+            inputs,
+            outputs,
+            motor_commands,
+        } = &mut *bufs;
         inputs.resize(brain.num_inputs, 0.0);
 
-        let outputs = brain.evaluator.evaluate(inputs);
-        let out_start = output_storage.len();
-        output_storage.extend_from_slice(&outputs);
-        if idx < bucket_count {
-            output_ranges[idx] = (out_start, outputs.len());
+        // Evaluate into reusable output buffer with per-brain scratchpad.
+        let num_out = brain.evaluator.num_outputs();
+        outputs.resize(num_out, 0.0);
+        let brain = brain.into_inner();
+        brain
+            .evaluator
+            .evaluate_into(inputs, outputs, &mut brain.scratchpad);
+
+        // Collect motor commands via direct joint entity refs
+        for (ji, &joint_entity) in brain.joint_entities.iter().enumerate() {
+            if let Some(&output) = outputs.get(ji) {
+                motor_commands.push((joint_entity, output));
+            }
         }
     }
 
-    // --- Apply motor commands to joints ---
-    for (agent_joint, mut joint) in &mut joints {
-        let idx = agent_joint.agent_index;
-        if let Some(&(start, len)) = bufs.output_ranges.get(idx)
-            && let Some(&output) = bufs
-                .output_storage
-                .get(start + agent_joint.joint_index)
-                .filter(|_| agent_joint.joint_index < len)
-        {
+    // Apply motor commands to joints.
+    for &(joint_entity, output) in &bufs.motor_commands {
+        if let Ok(mut joint) = joints.get_mut(joint_entity) {
             joint.motor.target_velocity = output * MAX_MOTOR_VELOCITY;
             joint.motor.max_torque = MAX_MOTOR_TORQUE;
         }

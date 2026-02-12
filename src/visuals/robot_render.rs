@@ -1,12 +1,12 @@
 use crate::core::population::Population;
 use crate::simulation::brain::{AgentImu, AgentJoint, AgentModule, AgentTouch, RobotBrain};
+use crate::simulation::lifecycle::derive_blueprint;
 use crate::simulation::scoring::FitnessBaseline;
 use bevy::prelude::*;
 use bevy_symbios::materials::{MaterialPalette, setup_material_assets};
 use bevy_symbios::robot::spawn_robot;
-use symbios::System;
 use symbios_neat::CppnEvaluator;
-use symbios_robot::{JointType, RobotConfig, RobotInterpreter, SensorType};
+use symbios_robot::{JointType, RobotBlueprint, SensorType};
 
 pub fn setup_materials(
     commands: Commands,
@@ -17,7 +17,8 @@ pub fn setup_materials(
 }
 
 /// Reactively spawns robots when the Population resource changes.
-/// Attaches RobotBrain and AgentJoint components for neural control.
+/// Attaches RobotBrain (with entity refs) and sensor/joint components.
+/// Uses cached blueprints when available to avoid redundant L-System parsing.
 pub fn spawn_agents(
     mut commands: Commands,
     mut population: ResMut<Population>,
@@ -38,38 +39,19 @@ pub fn spawn_agents(
             continue;
         }
 
-        // Parse L-System morphology (handles #define, omega, and production rules)
-        let mut sys = match System::from_source(&agent.genotype.morphology) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Agent {}: failed to parse morphology: {}", i, e);
-                continue;
-            }
-        };
-        let _ = sys.derive(3);
-
-        // Build blueprint
-        let mut interpreter = RobotInterpreter::new(RobotConfig::default());
-        interpreter.populate_standard_symbols(&sys.interner);
-        let blueprint = interpreter.build_blueprint(&sys.state);
-
-        let num_modules = blueprint.modules.len();
-        let num_hinges = blueprint
-            .joints
-            .iter()
-            .filter(|j| j.joint_type == JointType::Hinge)
-            .count();
-        let mut num_imus = 0usize;
-        let mut num_touches = 0usize;
-        for module in blueprint.modules.values() {
-            for sensor in &module.sensors {
-                match sensor.sensor_type {
-                    SensorType::IMU => num_imus += 1,
-                    SensorType::Touch => num_touches += 1,
-                    _ => {}
+        // Use cached blueprint or derive fresh from L-System morphology.
+        let blueprint = match agent.cached_blueprint.take() {
+            Some(bp) => bp,
+            None => match derive_blueprint(&agent.genotype.morphology) {
+                Some((bp, _, _)) => bp,
+                None => {
+                    warn!("Agent {}: failed to parse morphology", i);
+                    continue;
                 }
-            }
-        }
+            },
+        };
+
+        let (num_modules, num_hinges, num_imus, num_touches) = count_blueprint_stats(&blueprint);
 
         // MAP-Elites behavioral descriptor: [complexity, body_size] in [0,1]
         agent.descriptor = [
@@ -88,15 +70,13 @@ pub fn spawn_agents(
         let x = col as f32 * spacing - offset;
         let z = row as f32 * spacing - offset;
         let spawn_pos = Vec3::new(x, 2.0, z);
-        // Rotate -180° around X
-        // maps to world -Y (downward), placing legs beneath the body.
         let spawn_transform = Transform::from_translation(spawn_pos)
             .with_rotation(Quat::from_rotation_x(-std::f32::consts::PI));
 
-        // Spawn root entity (container for cleanup via recursive despawn)
         let mut genome = agent.genotype.controller.clone();
         genome.break_cycles();
         let evaluator = CppnEvaluator::new(&genome);
+        let scratchpad = evaluator.create_scratchpad();
 
         let root = commands
             .spawn((
@@ -119,7 +99,7 @@ pub fn spawn_agents(
         for &module_entity in &spawned.modules {
             commands
                 .entity(module_entity)
-                .insert(AgentModule { agent_index: i });
+                .insert(AgentModule);
         }
 
         // Parent all spawned entities under root for proper cleanup on despawn
@@ -133,63 +113,78 @@ pub fn spawn_agents(
             }
         }
 
-        // Use the NEAT genome's actual input count so evaluate() never panics.
-        // Mutated morphologies may have more or fewer sensors than the genome
-        // was originally sized for — padding/truncation handles the mismatch.
         let num_inputs = genome.input_ids.len();
 
-        // Attach brain and spawn tracker to the first module (body) entity,
-        // which is an actual physics body whose Transform updates under simulation.
-        // This is needed for fitness scoring (displacement) and brain sensing.
-        if let Some(&body_entity) = spawned.modules.first() {
-            commands.entity(body_entity).insert((
-                RobotBrain {
-                    evaluator,
-                    agent_index: i,
-                    num_inputs,
-                },
-                FitnessBaseline(None),
-            ));
-        }
-
-        // Attach AgentJoint markers directly to hinge joint entities
-        // so drive_motors() can query (&AgentJoint, &mut RevoluteJoint) on the same entity
-        let mut joint_index = 0;
-        for &(joint_entity, joint_type) in &spawned.joints {
-            if joint_type == JointType::Hinge {
-                commands.entity(joint_entity).insert(AgentJoint {
-                    agent_index: i,
-                    joint_index,
-                });
-                joint_index += 1;
-            }
-        }
-
-        // Attach AgentImu / AgentTouch markers to sensor-bearing module entities
-        let mut imu_index = 0;
-        let mut touch_index = 0;
+        // Collect entity refs for direct O(1) access in drive_motors/scoring.
+        let mut imu_entities = Vec::with_capacity(num_imus);
+        let mut touch_entities = Vec::with_capacity(num_touches);
         for &(sensor_entity, sensor_type) in &spawned.sensors {
             match sensor_type {
                 SensorType::IMU => {
                     commands.entity(sensor_entity).insert(AgentImu {
-                        agent_index: i,
-                        sensor_index: imu_index,
                         prev_linear_vel: Vec3::ZERO,
                         prev_angular_vel: Vec3::ZERO,
                     });
-                    imu_index += 1;
+                    imu_entities.push(sensor_entity);
                 }
                 SensorType::Touch => {
-                    commands.entity(sensor_entity).insert(AgentTouch {
-                        agent_index: i,
-                        sensor_index: touch_index,
-                    });
-                    touch_index += 1;
+                    commands.entity(sensor_entity).insert(AgentTouch);
+                    touch_entities.push(sensor_entity);
                 }
                 _ => {}
             }
         }
 
+        let mut joint_entities = Vec::with_capacity(num_hinges);
+        for &(joint_entity, joint_type) in &spawned.joints {
+            if joint_type == JointType::Hinge {
+                commands.entity(joint_entity).insert(AgentJoint);
+                joint_entities.push(joint_entity);
+            }
+        }
+
+        // Module entities excluding the body (first module) for explosion checks.
+        let module_entities: Vec<Entity> = spawned.modules.iter().skip(1).copied().collect();
+
+        // Attach brain to the first module (body) entity.
+        if let Some(&body_entity) = spawned.modules.first() {
+            commands.entity(body_entity).insert((
+                RobotBrain {
+                    evaluator,
+                    scratchpad,
+                    agent_index: i,
+                    num_inputs,
+                    imu_entities,
+                    touch_entities,
+                    joint_entities,
+                    module_entities,
+                },
+                FitnessBaseline(None),
+            ));
+        }
+
         agent.root_entity = Some(root);
     }
+}
+
+/// Counts modules, hinge joints, IMU sensors, and touch sensors from a blueprint.
+fn count_blueprint_stats(blueprint: &RobotBlueprint) -> (usize, usize, usize, usize) {
+    let num_modules = blueprint.modules.len();
+    let num_hinges = blueprint
+        .joints
+        .iter()
+        .filter(|j| j.joint_type == JointType::Hinge)
+        .count();
+    let mut num_imus = 0usize;
+    let mut num_touches = 0usize;
+    for module in blueprint.modules.values() {
+        for sensor in &module.sensors {
+            match sensor.sensor_type {
+                SensorType::IMU => num_imus += 1,
+                SensorType::Touch => num_touches += 1,
+                _ => {}
+            }
+        }
+    }
+    (num_modules, num_hinges, num_imus, num_touches)
 }

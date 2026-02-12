@@ -8,15 +8,13 @@ use rand::SeedableRng;
 use rand_pcg::Pcg64;
 use symbios::System;
 use symbios_neat::NeatConfig;
-use symbios_robot::{JointType, RobotConfig, RobotInterpreter, SensorType};
+use symbios_robot::{JointType, RobotBlueprint, RobotConfig, RobotInterpreter, SensorType};
 
-/// Derives NEAT input/output sizes from an L-System morphology string.
+/// Parses an L-System morphology string and builds the robot blueprint.
 ///
-/// Parses the morphology, builds a blueprint, and counts IMU sensors,
-/// touch sensors, and hinge joints to determine brain topology.
-///
-/// Returns `(num_inputs, num_outputs)` or `None` if the morphology fails to parse.
-pub fn derive_brain_topology(morphology: &str) -> Option<(usize, usize)> {
+/// Returns the blueprint along with brain topology `(num_inputs, num_outputs)`,
+/// or `None` if the morphology fails to parse.
+pub fn derive_blueprint(morphology: &str) -> Option<(RobotBlueprint, usize, usize)> {
     let mut sys = System::from_source(morphology).ok()?;
     sys.derive(3).ok()?;
 
@@ -42,8 +40,10 @@ pub fn derive_brain_topology(morphology: &str) -> Option<(usize, usize)> {
         .filter(|j| j.joint_type == JointType::Hinge)
         .count();
 
-    Some((compute_num_inputs(num_imus, num_touches), num_outputs))
+    let num_inputs = compute_num_inputs(num_imus, num_touches);
+    Some((blueprint, num_inputs, num_outputs))
 }
+
 
 #[derive(Message)]
 pub struct SpawnRequest;
@@ -74,11 +74,14 @@ pub fn manage_generations(
             .map(|_| {
                 let morphology = MORPHOLOGY_POOL[rand::random_range(0..MORPHOLOGY_POOL.len())];
 
-                let (num_inputs, num_outputs) =
-                    derive_brain_topology(morphology).unwrap_or_else(|| {
+                let derived = derive_blueprint(morphology);
+                let (blueprint, num_inputs, num_outputs) = match derived {
+                    Some((bp, ni, no)) => (Some(bp), ni, no),
+                    None => {
                         warn!("Failed to derive brain topology, using fallback");
-                        (8, 4)
-                    });
+                        (None, 8, 4)
+                    }
+                };
 
                 let neat_config = NeatConfig {
                     num_inputs,
@@ -92,6 +95,7 @@ pub fn manage_generations(
                     fitness: 0.0,
                     descriptor: [0.0, 0.0],
                     root_entity: None,
+                    cached_blueprint: blueprint,
                 }
             })
             .collect();
