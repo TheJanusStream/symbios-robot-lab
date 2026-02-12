@@ -185,6 +185,7 @@ pub fn manage_generations(
                         &mut rng,
                     ),
                     fitness: 0.0,
+                    descriptor: [0.0, 0.0],
                     root_entity: None,
                 }
             })

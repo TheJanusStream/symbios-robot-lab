@@ -1,6 +1,6 @@
 use crate::core::config::LabConfig;
 use crate::core::population::Population;
-use crate::simulation::generation::GenerationTimer;
+use crate::simulation::generation::{EliteArchive, GenerationTimer};
 use crate::simulation::lifecycle::SpawnRequest;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -10,6 +10,8 @@ use bevy_egui::{EguiContexts, egui};
 pub struct Telemetry {
     pub best_all_time: f32,
     pub best_per_generation: Vec<f32>,
+    /// Number of occupied cells in the MAP-Elites archive.
+    pub archive_coverage: usize,
 }
 
 pub fn render_ui(
@@ -18,6 +20,7 @@ pub fn render_ui(
     population: Res<Population>,
     gen_timer: Res<GenerationTimer>,
     mut telemetry: ResMut<Telemetry>,
+    mut archive: ResMut<EliteArchive>,
     mut spawn_writer: MessageWriter<SpawnRequest>,
 ) {
     // Track best-of-all-time
@@ -60,6 +63,7 @@ pub fn render_ui(
         ui.heading("Fitness");
         ui.label(format!("Current best: {:.5}", current_best));
         ui.label(format!("All-time best: {:.5}", telemetry.best_all_time));
+        ui.label(format!("Archive: {} / 100 cells", telemetry.archive_coverage));
 
         // Population fitness heatmap (sorted bar visualization)
         if !population.agents.is_empty() {
@@ -185,6 +189,8 @@ pub fn render_ui(
         if ui.button("Initialize Population").clicked() {
             telemetry.best_all_time = 0.0;
             telemetry.best_per_generation.clear();
+            telemetry.archive_coverage = 0;
+            archive.clear();
             spawn_writer.write(SpawnRequest);
         }
     });

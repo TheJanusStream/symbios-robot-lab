@@ -53,11 +53,33 @@ pub fn spawn_agents(
         interpreter.populate_standard_symbols(&sys.interner);
         let blueprint = interpreter.build_blueprint(&sys.state);
 
+        let num_modules = blueprint.modules.len();
+        let num_hinges = blueprint
+            .joints
+            .iter()
+            .filter(|j| j.joint_type == JointType::Hinge)
+            .count();
+        let mut num_imus = 0usize;
+        let mut num_touches = 0usize;
+        for module in blueprint.modules.values() {
+            for sensor in &module.sensors {
+                match sensor.sensor_type {
+                    SensorType::IMU => num_imus += 1,
+                    SensorType::Touch => num_touches += 1,
+                    _ => {}
+                }
+            }
+        }
+
+        // MAP-Elites behavioral descriptor: [complexity, body_size] in [0,1]
+        agent.descriptor = [
+            (num_hinges as f32 / 20.0).min(1.0),
+            (num_modules as f32 / 25.0).min(1.0),
+        ];
+
         info!(
-            "Spawning Agent {}: {} modules, {} joints",
-            i,
-            blueprint.modules.len(),
-            blueprint.joints.len()
+            "Spawning Agent {}: {} modules, {} joints, {} IMU, {} touch",
+            i, num_modules, num_hinges, num_imus, num_touches,
         );
 
         // Calculate spawn position

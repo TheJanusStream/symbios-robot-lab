@@ -5,6 +5,9 @@ use bevy::prelude::*;
 pub struct Agent {
     pub genotype: AgentGenotype,
     pub fitness: f32,
+    /// MAP-Elites behavioral descriptor [morphological_complexity, body_size].
+    /// Values normalized to [0, 1]. Set at spawn from the robot blueprint.
+    pub descriptor: [f32; 2],
     /// The root entity of the spawned robot in the Bevy world
     pub root_entity: Option<Entity>,
 }
@@ -41,6 +44,7 @@ mod tests {
         Agent {
             genotype: AgentGenotype::new("omega: B(1)".to_string(), &config, rng),
             fitness: 0.0,
+            descriptor: [0.0, 0.0],
             root_entity: None,
         }
     }

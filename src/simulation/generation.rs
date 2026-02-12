@@ -1,10 +1,14 @@
 use crate::core::config::LabConfig;
+use crate::core::genome::AgentGenotype;
 use crate::core::population::{Agent, Population};
+use crate::simulation::lifecycle::derive_brain_topology;
 use crate::ui::lab_panel::Telemetry;
 use bevy::prelude::*;
 use rand::SeedableRng;
 use rand_pcg::Pcg64;
-use symbios_genetics::Genotype;
+use std::collections::BTreeMap;
+use symbios_genetics::{Genotype, Phenotype};
+use symbios_neat::NeatConfig;
 
 /// Tracks time remaining in the current generation.
 #[derive(Resource)]
@@ -19,6 +23,101 @@ impl Default for GenerationTimer {
             timer: Timer::from_seconds(15.0, TimerMode::Once),
             active: false,
         }
+    }
+}
+
+/// MAP-Elites archive: a grid of best-in-niche individuals.
+///
+/// 2D behavioral descriptor:
+///   - Axis 0: morphological complexity (num_hinge_joints / 20, clamped to [0,1])
+///   - Axis 1: body size (num_modules / 25, clamped to [0,1])
+///
+/// Each cell stores the highest-fitness individual that maps to that niche.
+#[derive(Resource)]
+pub struct EliteArchive {
+    archive: BTreeMap<[usize; 2], Phenotype<AgentGenotype>>,
+    /// Cached list of occupied keys for O(1) random parent sampling.
+    keys: Vec<[usize; 2]>,
+    /// Number of bins per descriptor dimension.
+    pub resolution: usize,
+}
+
+impl Default for EliteArchive {
+    fn default() -> Self {
+        Self {
+            archive: BTreeMap::new(),
+            keys: Vec::new(),
+            resolution: 10,
+        }
+    }
+}
+
+impl EliteArchive {
+    /// Maps a behavioral descriptor (values in [0,1]) to grid cell indices.
+    fn map_to_index(&self, descriptor: &[f32; 2]) -> [usize; 2] {
+        let map_dim = |v: f32| -> usize {
+            let scaled = v.clamp(0.0, 1.0) * self.resolution as f32;
+            (scaled.floor() as usize).min(self.resolution - 1)
+        };
+        [map_dim(descriptor[0]), map_dim(descriptor[1])]
+    }
+
+    /// Inserts an individual into the archive if its cell is empty or it has
+    /// strictly higher fitness than the current occupant.
+    fn insert(&mut self, genotype: AgentGenotype, fitness: f32, descriptor: [f32; 2]) {
+        if !fitness.is_finite() {
+            return;
+        }
+        let idx = self.map_to_index(&descriptor);
+
+        let dominated = self
+            .archive
+            .get(&idx)
+            .is_some_and(|e| fitness <= e.fitness && !e.fitness.is_nan());
+
+        if !dominated {
+            let is_new = !self.archive.contains_key(&idx);
+            self.archive.insert(
+                idx,
+                Phenotype {
+                    genotype,
+                    fitness,
+                    objectives: vec![fitness],
+                    descriptor: descriptor.to_vec(),
+                },
+            );
+            if is_new {
+                self.keys.push(idx);
+            }
+        }
+    }
+
+    /// Returns the number of occupied cells.
+    pub fn len(&self) -> usize {
+        self.archive.len()
+    }
+
+    /// Samples a random parent genotype from the archive.
+    fn sample_parent(&self, rng: &mut impl rand::Rng) -> Option<&AgentGenotype> {
+        if self.keys.is_empty() {
+            return None;
+        }
+        let key = &self.keys[rng.random_range(0..self.keys.len())];
+        self.archive.get(key).map(|p| &p.genotype)
+    }
+
+    /// Returns the best fitness across all archive cells.
+    pub fn best_fitness(&self) -> f32 {
+        self.archive
+            .values()
+            .map(|p| p.fitness)
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Clears the archive (used when reinitializing the population).
+    pub fn clear(&mut self) {
+        self.archive.clear();
+        self.keys.clear();
     }
 }
 
@@ -39,7 +138,8 @@ pub fn activate_timer(
     }
 }
 
-/// Handles end-of-generation: selection, breeding, despawning, and re-spawning.
+/// MAP-Elites end-of-generation: insert evaluated agents into the archive,
+/// then sample parents and mutate to create the next generation.
 pub fn tick_generation(
     mut commands: Commands,
     time: Res<Time>,
@@ -47,6 +147,7 @@ pub fn tick_generation(
     mut population: ResMut<Population>,
     mut gen_timer: ResMut<GenerationTimer>,
     mut telemetry: ResMut<Telemetry>,
+    mut archive: ResMut<EliteArchive>,
 ) {
     if !gen_timer.active {
         return;
@@ -59,74 +160,85 @@ pub fn tick_generation(
 
     // --- End of Generation ---
     let generation = population.generation;
-    let best_fitness = population
-        .agents
-        .iter()
-        .map(|a| a.fitness)
-        .fold(0.0_f32, f32::max);
 
+    // 1. Insert all evaluated agents into the MAP-Elites archive
+    for agent in &population.agents {
+        archive.insert(
+            agent.genotype.clone(),
+            agent.fitness,
+            agent.descriptor,
+        );
+    }
+
+    let best_fitness = archive.best_fitness();
     info!(
-        "Generation {} complete. Best fitness: {:.2}",
-        generation, best_fitness
+        "Generation {} complete. Archive: {}/{} cells, best fitness: {:.2}",
+        generation,
+        archive.len(),
+        archive.resolution * archive.resolution,
+        best_fitness,
     );
 
     telemetry.best_per_generation.push(best_fitness);
+    telemetry.archive_coverage = archive.len();
 
-    // Sort by fitness (descending); total_cmp handles NaN safely
-    population.agents.sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
-
-    // Selection + Breeding
+    // 2. Sample parents from archive and create offspring via mutation
     let mut rng = Pcg64::from_rng(&mut rand::rng());
-    let current_len = population.agents.len();
-    let elite_count = (config.population_size / 5).max(1).min(current_len);
     let mutation_rate = 0.3;
 
     let mut next_gen: Vec<Agent> = Vec::with_capacity(config.population_size);
 
-    // Carry elites forward unchanged
-    for agent in population.agents.iter().take(elite_count) {
-        let mut elite = agent.clone();
-        elite.fitness = 0.0;
-        elite.root_entity = None;
-        elite.genotype.generation = generation + 1;
-        next_gen.push(elite);
-    }
+    for _ in 0..config.population_size {
+        let parent = match archive.sample_parent(&mut rng) {
+            Some(p) => p,
+            None => continue,
+        };
 
-    // Fill remaining slots via crossover + mutation from top 50%
-    let parent_pool_size = (config.population_size / 2).max(2).min(current_len);
-    while next_gen.len() < config.population_size {
-        let p1 = rand::random_range(0..parent_pool_size);
-        let p2 = rand::random_range(0..parent_pool_size);
-        let mut child_genotype = population.agents[p1]
-            .genotype
-            .crossover(&population.agents[p2].genotype, &mut rng);
-        child_genotype.mutate(&mut rng, mutation_rate);
-        child_genotype.generation = generation + 1;
+        let mut child = parent.clone();
+        child.mutate(&mut rng, mutation_rate);
+        child.generation = generation + 1;
+
+        // Derive NEAT brain topology for the (potentially mutated) morphology.
+        // If parsing fails, keep the parent's genome dimensions unchanged.
+        let neat_config = derive_brain_topology(&child.morphology).map(|(ni, no)| NeatConfig {
+            num_inputs: ni,
+            num_outputs: no,
+            output_activation: symbios_neat::Activation::Tanh,
+            ..NeatConfig::default()
+        });
+
+        // If morphology changed topology, rebuild the NEAT genome to match.
+        // Otherwise keep the inherited (and potentially mutated) genome.
+        if let Some(cfg) = neat_config.filter(|c| {
+            c.num_inputs != child.controller.input_ids.len()
+                || c.num_outputs != child.controller.output_ids.len()
+        }) {
+            child.controller = symbios_neat::NeatGenome::fully_connected(cfg, &mut rng);
+        }
 
         next_gen.push(Agent {
-            genotype: child_genotype,
+            genotype: child,
             fitness: 0.0,
+            descriptor: [0.0, 0.0],
             root_entity: None,
         });
     }
 
-    // Despawn all old robot hierarchies via their root entities.
-    // Bevy 0.18 despawn is recursive — children (modules, joints) are cleaned up automatically.
+    // 3. Despawn all old robot hierarchies
     for agent in &population.agents {
         if let Some(root) = agent.root_entity {
             commands.entity(root).try_despawn();
         }
     }
 
-    // Install next generation
-    let next_generation = generation + 1;
+    // 4. Install next generation
     *population = Population {
         agents: next_gen,
-        generation: next_generation,
+        generation: generation + 1,
     };
 
-    // Reset timer
+    // 5. Reset timer
     gen_timer.timer = Timer::from_seconds(config.generation_duration, TimerMode::Once);
     gen_timer.timer.reset();
-    gen_timer.active = false; // Will be re-activated by activate_timer when population changes
+    gen_timer.active = false;
 }
