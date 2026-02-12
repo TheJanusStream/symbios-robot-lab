@@ -25,12 +25,19 @@ pub struct RobotBrain {
     pub num_inputs: usize,
 }
 
-/// Marker linking an IMU-bearing module entity to its owning agent.
-/// The IMU contributes 3 inputs: pitch, roll, and yaw of the module.
+/// IMU sensor attached to a module rigid body.
+///
+/// Provides 6 inputs per tick:
+///   - Linear acceleration  (x, y, z) — world-space, derived from velocity delta
+///   - Angular acceleration (x, y, z) — world-space, derived from velocity delta
+///
+/// Previous-frame velocities are stored to compute finite-difference acceleration.
 #[derive(Component)]
 pub struct AgentImu {
     pub agent_index: usize,
     pub sensor_index: usize,
+    pub prev_linear_vel: Vec3,
+    pub prev_angular_vel: Vec3,
 }
 
 /// Marker linking a Touch-bearing module entity to its owning agent.
@@ -43,8 +50,8 @@ pub struct AgentTouch {
 
 /// Number of clock inputs (sin(t), cos(t)).
 pub const NUM_CLOCK_INPUTS: usize = 2;
-/// Each IMU contributes 3 values (pitch, roll, yaw).
-pub const INPUTS_PER_IMU: usize = 3;
+/// Each IMU contributes 6 values (linear accel xyz, angular accel xyz).
+pub const INPUTS_PER_IMU: usize = 6;
 /// Each touch sensor contributes 1 value (contact boolean).
 pub const INPUTS_PER_TOUCH: usize = 1;
 
@@ -52,7 +59,7 @@ pub const INPUTS_PER_TOUCH: usize = 1;
 ///
 /// Layout:
 ///   0..2:          sin(t), cos(t)  — oscillation clocks
-///   2..2+3N_imu:   pitch, roll, yaw per IMU sensor
+///   2..2+6N_imu:   linear accel (x,y,z) + angular accel (x,y,z) per IMU
 ///   ..+N_touch:    contact flag per touch sensor
 ///
 /// Outputs (one per hinge joint):
@@ -69,37 +76,46 @@ const MAX_MOTOR_TORQUE: f32 = 1000.0;
 
 /// System that evaluates each agent's NEAT brain and drives its joint motors.
 ///
-/// Gathers sensor data (IMU orientation, touch contacts), feeds the NEAT
+/// Gathers sensor data (IMU acceleration, touch contacts), feeds the NEAT
 /// network, and applies motor outputs to joints.
 pub fn drive_motors(
     brains: Query<&RobotBrain>,
-    imus: Query<(&AgentImu, &Transform)>,
+    mut imus: Query<(&mut AgentImu, &LinearVelocity, &AngularVelocity)>,
     touches: Query<(&AgentTouch, Option<&CollidingEntities>)>,
     mut joints: Query<(&AgentJoint, &mut RevoluteJoint)>,
     time: Res<Time>,
 ) {
     let t = time.elapsed_secs();
+    let dt = time.delta_secs();
 
     let max_index = match brains.iter().map(|b| b.agent_index).max() {
         Some(m) => m,
         None => return,
     };
 
-    // Collect IMU readings per agent. Key: (agent_index, sensor_index).
-    let mut imu_data: Vec<Vec<(usize, f32, f32, f32)>> = vec![vec![]; max_index + 1];
-    for (imu, tf) in &imus {
-        let forward = tf.forward();
-        let up = tf.up();
-        let pitch = forward.y.asin();
-        let roll = up.x.atan2(up.y);
-        let yaw = forward.x.atan2(forward.z);
+    // Collect IMU readings per agent: 6 values (lin_accel xyz, ang_accel xyz).
+    let inv_dt = if dt > 0.0 { 1.0 / dt } else { 0.0 };
+    let mut imu_data: Vec<Vec<(usize, [f32; 6])>> = vec![vec![]; max_index + 1];
+    for (mut imu, lin_vel, ang_vel) in &mut imus {
+        let lin_accel = (lin_vel.0 - imu.prev_linear_vel) * inv_dt;
+        let ang_accel = (ang_vel.0 - imu.prev_angular_vel) * inv_dt;
+
+        imu.prev_linear_vel = lin_vel.0;
+        imu.prev_angular_vel = ang_vel.0;
+
         if let Some(bucket) = imu_data.get_mut(imu.agent_index) {
-            bucket.push((imu.sensor_index, pitch, roll, yaw));
+            bucket.push((
+                imu.sensor_index,
+                [
+                    lin_accel.x, lin_accel.y, lin_accel.z,
+                    ang_accel.x, ang_accel.y, ang_accel.z,
+                ],
+            ));
         }
     }
     // Sort each bucket so sensor_index order is deterministic.
     for bucket in &mut imu_data {
-        bucket.sort_by_key(|(idx, _, _, _)| *idx);
+        bucket.sort_by_key(|(idx, _)| *idx);
     }
 
     // Collect Touch readings per agent.
@@ -127,12 +143,10 @@ pub fn drive_motors(
         inputs.push(t.sin());
         inputs.push(t.cos());
 
-        // IMU data (pitch, roll, yaw per sensor)
+        // IMU data (linear accel xyz, angular accel xyz per sensor)
         if let Some(bucket) = imu_data.get(idx) {
-            for &(_, pitch, roll, yaw) in bucket {
-                inputs.push(pitch);
-                inputs.push(roll);
-                inputs.push(yaw);
+            for &(_, accel) in bucket {
+                inputs.extend_from_slice(&accel);
             }
         }
 

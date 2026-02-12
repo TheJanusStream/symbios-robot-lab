@@ -152,6 +152,8 @@ pub fn spawn_agents(
                     commands.entity(sensor_entity).insert(AgentImu {
                         agent_index: i,
                         sensor_index: imu_index,
+                        prev_linear_vel: Vec3::ZERO,
+                        prev_angular_vel: Vec3::ZERO,
                     });
                     imu_index += 1;
                 }
