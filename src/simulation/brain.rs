@@ -107,8 +107,12 @@ pub fn drive_motors(
             bucket.push((
                 imu.sensor_index,
                 [
-                    lin_accel.x, lin_accel.y, lin_accel.z,
-                    ang_accel.x, ang_accel.y, ang_accel.z,
+                    lin_accel.x,
+                    lin_accel.y,
+                    lin_accel.z,
+                    ang_accel.x,
+                    ang_accel.y,
+                    ang_accel.z,
                 ],
             ));
         }

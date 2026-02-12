@@ -163,11 +163,7 @@ pub fn tick_generation(
 
     // 1. Insert all evaluated agents into the MAP-Elites archive
     for agent in &population.agents {
-        archive.insert(
-            agent.genotype.clone(),
-            agent.fitness,
-            agent.descriptor,
-        );
+        archive.insert(agent.genotype.clone(), agent.fitness, agent.descriptor);
     }
 
     let best_fitness = archive.best_fitness();

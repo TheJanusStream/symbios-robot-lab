@@ -63,7 +63,10 @@ pub fn render_ui(
         ui.heading("Fitness");
         ui.label(format!("Current best: {:.5}", current_best));
         ui.label(format!("All-time best: {:.5}", telemetry.best_all_time));
-        ui.label(format!("Archive: {} / 100 cells", telemetry.archive_coverage));
+        ui.label(format!(
+            "Archive: {} / 100 cells",
+            telemetry.archive_coverage
+        ));
 
         // Population fitness heatmap (sorted bar visualization)
         if !population.agents.is_empty() {
@@ -103,10 +106,8 @@ pub fn render_ui(
             let max_val = data.iter().copied().fold(0.01_f32, f32::max);
             let graph_width = ui.available_width();
             let graph_height = 80.0;
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(graph_width, graph_height),
-                egui::Sense::hover(),
-            );
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(graph_width, graph_height), egui::Sense::hover());
             let painter = ui.painter_at(rect);
 
             // Background

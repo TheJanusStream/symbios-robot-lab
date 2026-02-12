@@ -5,6 +5,7 @@
 
 use symbios::System;
 use symbios_robot::{JointType, RobotConfig, RobotInterpreter, SensorType};
+use symbios_robot_lab::core::presets::MORPHOLOGY_POOL;
 
 /// Parse an L-System morphology string and build a RobotBlueprint.
 fn build_blueprint_from_source(source: &str) -> symbios_robot::RobotBlueprint {
@@ -37,19 +38,7 @@ fn count_sensors(bp: &symbios_robot::RobotBlueprint, sensor_type: SensorType) ->
 // Default quadruped morphology (mirrors lifecycle.rs DEFAULT_MORPHOLOGY)
 // ---------------------------------------------------------------------------
 
-const QUADRUPED: &str = "\
-#define hip_min -1.57
-#define hip_max 1.57
-#define hip_eff 50
-#define hip_vel 5
-#define knee_min -2.0
-#define knee_max 0.2
-#define knee_eff 30
-#define knee_vel 5
-#define lw 0.15
-#define seg 0.5
-omega: !(0.6) K(0.2, 0.3) Si [ &(90) L ] [ \\(90) &(90) L ] [ |(1) &(90) L ] [ /(90) &(90) L ]
-L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) B(seg) Jl(knee_min, knee_max, knee_eff, knee_vel) J B(seg) St";
+const QUADRUPED: &str = MORPHOLOGY_POOL[0];
 
 #[test]
 fn quadruped_has_correct_module_count() {
@@ -167,57 +156,11 @@ L -> J B(len) J B(len)";
 // Morphology pool: all initial morphologies must parse and produce valid robots
 // ---------------------------------------------------------------------------
 
-const CENTIPEDE: &str = "\
-#define jmin -1.2
-#define jmax 1.2
-#define eff 40
-#define vel 5
-#define lw 0.12
-#define seg 0.4
-omega: !(0.4) K(0.15, 0.25) Si S
-S -> Jl(jmin, jmax, eff, vel) J B(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) B(seg) St ] [ /(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) B(seg) St ] S";
-
-const HEXAPOD: &str = "\
-#define jmin -1.57
-#define jmax 1.57
-#define eff 40
-#define vel 5
-#define lw 0.12
-#define seg 0.4
-omega: !(0.5) K(0.2, 0.35) Si [ &(90) L ] [ \\(60) &(90) L ] [ \\(120) &(90) L ] [ |(1) &(90) L ] [ /(120) &(90) L ] [ /(60) &(90) L ]
-L -> Jl(jmin, jmax, eff, vel) J !(lw) B(seg) Jl(jmin, jmax, eff, vel) J B(seg) St";
-
-const SNAKE: &str = "\
-#define jmin -0.8
-#define jmax 0.8
-#define eff 30
-#define vel 8
-#define seg 0.35
-omega: !(0.3) K(0.15, 0.2) Si St S
-S -> Jl(jmin, jmax, eff, vel) J B(seg) St S";
-
-const BIPED: &str = "\
-#define hip_min -1.57
-#define hip_max 1.57
-#define eff 60
-#define vel 5
-#define knee_min -2.0
-#define knee_max 0.2
-#define keff 40
-#define kvel 5
-#define lw 0.18
-#define seg 0.6
-omega: !(0.5) K(0.25, 0.4) Si [ &(90) L ] [ |(1) &(90) L ]
-L -> Jl(hip_min, hip_max, eff, vel) J !(lw) B(seg) Jl(knee_min, knee_max, keff, kvel) J B(seg) St";
-
-const STARFISH: &str = "\
-#define jmin -1.0
-#define jmax 1.0
-#define eff 35
-#define vel 5
-#define seg 0.5
-omega: !(0.5) K(0.2, 0.2) Si [ &(90) A ] [ \\(72) &(90) A ] [ \\(144) &(90) A ] [ /(144) &(90) A ] [ /(72) &(90) A ]
-A -> Jl(jmin, jmax, eff, vel) J B(seg) St";
+const CENTIPEDE: &str = MORPHOLOGY_POOL[1];
+const HEXAPOD: &str = MORPHOLOGY_POOL[2];
+const SNAKE: &str = MORPHOLOGY_POOL[3];
+const BIPED: &str = MORPHOLOGY_POOL[4];
+const STARFISH: &str = MORPHOLOGY_POOL[5];
 
 /// Validate that every morphology in the pool parses, derives, and produces
 /// a non-trivial robot with at least 1 module, 1 joint, and 1 sensor.
@@ -250,12 +193,7 @@ fn morphology_pool_all_valid() {
             name,
             hinges
         );
-        assert!(
-            imus >= 1,
-            "{}: expected at least 1 IMU, got {}",
-            name,
-            imus
-        );
+        assert!(imus >= 1, "{}: expected at least 1 IMU, got {}", name, imus);
         assert!(
             touches >= 1,
             "{}: expected at least 1 touch sensor, got {}",
@@ -279,8 +217,14 @@ fn centipede_has_recursive_segments() {
     let bp = build_blueprint_from_source(CENTIPEDE);
     // 3 derivation steps → 3 spine segments + 3×2 leg segments + 1 body = 10 modules
     // Each spine segment has 1 spine joint + 2 leg joints = 3 hinges per segment = 9 total
-    assert!(bp.modules.len() >= 7, "Centipede should have multiple segments");
-    assert!(count_hinge_joints(&bp) >= 6, "Centipede should have multiple joints");
+    assert!(
+        bp.modules.len() >= 7,
+        "Centipede should have multiple segments"
+    );
+    assert!(
+        count_hinge_joints(&bp) >= 6,
+        "Centipede should have multiple joints"
+    );
 }
 
 #[test]
@@ -292,7 +236,11 @@ fn hexapod_has_six_legs() {
         "Hexapod should have 6 touch sensors (one per foot)"
     );
     // 6 legs × 2 joints = 12
-    assert_eq!(count_hinge_joints(&bp), 12, "Hexapod should have 12 hinge joints");
+    assert_eq!(
+        count_hinge_joints(&bp),
+        12,
+        "Hexapod should have 12 hinge joints"
+    );
 }
 
 #[test]
@@ -303,7 +251,11 @@ fn biped_has_two_legs() {
         2,
         "Biped should have 2 touch sensors"
     );
-    assert_eq!(count_hinge_joints(&bp), 4, "Biped should have 4 hinge joints");
+    assert_eq!(
+        count_hinge_joints(&bp),
+        4,
+        "Biped should have 4 hinge joints"
+    );
 }
 
 #[test]
@@ -314,7 +266,11 @@ fn starfish_has_five_arms() {
         5,
         "Starfish should have 5 touch sensors"
     );
-    assert_eq!(count_hinge_joints(&bp), 5, "Starfish should have 5 hinge joints");
+    assert_eq!(
+        count_hinge_joints(&bp),
+        5,
+        "Starfish should have 5 hinge joints"
+    );
 }
 
 // ---------------------------------------------------------------------------
