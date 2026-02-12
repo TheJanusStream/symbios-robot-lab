@@ -24,7 +24,7 @@ pub const MORPHOLOGY_POOL: &[&str] = &[
 #define lw 0.15
 #define seg 0.5
 omega: !(0.6) K(0.2, 0.3) Si [ &(90) L ] [ \\(90) &(90) L ] [ |(1) &(90) L ] [ /(90) &(90) L ]
-L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) B(seg) Jl(knee_min, knee_max, knee_eff, knee_vel) J B(seg) St",
+L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg) St",
     // ── Centipede ──────────────────────────────────────────────────────
     // Recursive spine: each derivation adds a segment with 2 lateral legs.
     // 3 derivations → 3 spine segments + 6 legs. 10 modules, 9 joints.
@@ -36,7 +36,7 @@ L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) B(seg) Jl(knee_min, knee_max
 #define lw 0.12
 #define seg 0.4
 omega: !(0.4) K(0.15, 0.25) Si S
-S -> Jl(jmin, jmax, eff, vel) J B(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) B(seg) St ] [ /(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) B(seg) St ] S",
+S -> Jl(jmin, jmax, eff, vel) J K(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] [ /(90) &(90) Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St ] S",
     // ── Hexapod ────────────────────────────────────────────────────────
     // 6 legs at 60° intervals, 2 DOF per leg.
     // 13 modules, 12 joints, 1 IMU, 6 touch.
@@ -48,7 +48,7 @@ S -> Jl(jmin, jmax, eff, vel) J B(seg) [ \\(90) &(90) Jl(jmin, jmax, eff, vel) J
 #define lw 0.12
 #define seg 0.4
 omega: !(0.5) K(0.2, 0.35) Si [ &(90) L ] [ \\(60) &(90) L ] [ \\(120) &(90) L ] [ |(1) &(90) L ] [ /(120) &(90) L ] [ /(60) &(90) L ]
-L -> Jl(jmin, jmax, eff, vel) J !(lw) B(seg) Jl(jmin, jmax, eff, vel) J B(seg) St",
+L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg) Jl(jmin, jmax, eff, vel) J K(seg) St",
     // ── Snake ──────────────────────────────────────────────────────────
     // Legless chain of segments. Relies on body undulation for locomotion.
     // 3 derivations → 4 modules, 3 joints, 1 IMU, 4 touch.
@@ -59,7 +59,7 @@ L -> Jl(jmin, jmax, eff, vel) J !(lw) B(seg) Jl(jmin, jmax, eff, vel) J B(seg) S
 #define vel 8
 #define seg 0.35
 omega: !(0.3) K(0.15, 0.2) Si St S
-S -> Jl(jmin, jmax, eff, vel) J B(seg) St S",
+S -> Jl(jmin, jmax, eff, vel) J K(seg) St S",
     // ── Biped ──────────────────────────────────────────────────────────
     // 2 legs with hip + knee, tall body. Challenging balance problem.
     // 5 modules, 4 joints, 1 IMU, 2 touch.
@@ -75,7 +75,7 @@ S -> Jl(jmin, jmax, eff, vel) J B(seg) St S",
 #define lw 0.18
 #define seg 0.6
 omega: !(0.5) K(0.25, 0.4) Si [ &(90) L ] [ |(1) &(90) L ]
-L -> Jl(hip_min, hip_max, eff, vel) J !(lw) B(seg) Jl(knee_min, knee_max, keff, kvel) J B(seg) St",
+L -> Jl(hip_min, hip_max, eff, vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, kvel) J K(seg) St",
     // ── Starfish ───────────────────────────────────────────────────────
     // 5 single-segment arms at 72° intervals. Radial symmetry.
     // 6 modules, 5 joints, 1 IMU, 5 touch.
@@ -86,5 +86,5 @@ L -> Jl(hip_min, hip_max, eff, vel) J !(lw) B(seg) Jl(knee_min, knee_max, keff, 
 #define vel 5
 #define seg 0.5
 omega: !(0.5) K(0.2, 0.2) Si [ &(90) A ] [ \\(72) &(90) A ] [ \\(144) &(90) A ] [ /(144) &(90) A ] [ /(72) &(90) A ]
-A -> Jl(jmin, jmax, eff, vel) J B(seg) St",
+A -> Jl(jmin, jmax, eff, vel) J K(seg) St",
 ];
