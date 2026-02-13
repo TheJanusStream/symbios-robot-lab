@@ -1,6 +1,7 @@
 use crate::core::config::LabConfig;
 use crate::core::genome::AgentGenotype;
 use crate::core::population::{Agent, Population};
+use crate::core::presets::MORPHOLOGY_POOL;
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::ui::lab_panel::Telemetry;
 use bevy::prelude::*;
@@ -214,12 +215,17 @@ pub fn tick_generation(
     telemetry.best_per_generation.push(best_fitness);
     telemetry.pareto_front_size = parent_pool.front_size();
 
-    // 3. Binary tournament selection + crossover + mutation
+    // 3. Binary tournament selection + crossover + mutation,
+    //    with 10% fresh preset injection to maintain genetic diversity.
     let mut rng = Pcg64::from_rng(&mut rand::rng());
     let mutation_rate = 0.3;
+    let num_fresh = config.population_size / 10;
+    let num_evolved = config.population_size - num_fresh;
 
     let mut children: Vec<AgentGenotype> = Vec::with_capacity(config.population_size);
-    for _ in 0..config.population_size {
+
+    // 3a. Evolved offspring from parent pool
+    for _ in 0..num_evolved {
         if parent_pool.len() < 2 {
             break;
         }
@@ -232,6 +238,22 @@ pub fn tick_generation(
         child.mutate(&mut rng, mutation_rate);
         child.generation = generation + 1;
         children.push(child);
+    }
+
+    // 3b. Fresh preset injection (10%) to keep the gene pool diverse
+    for _ in 0..num_fresh {
+        let morphology = MORPHOLOGY_POOL[rng.random_range(0..MORPHOLOGY_POOL.len())];
+        if let Some((_, ni, no)) = derive_blueprint(morphology) {
+            let cfg = NeatConfig {
+                num_inputs: ni,
+                num_outputs: no,
+                output_activation: symbios_neat::Activation::Tanh,
+                ..NeatConfig::default()
+            };
+            let mut geno = AgentGenotype::new(morphology.to_string(), &cfg, &mut rng);
+            geno.generation = generation + 1;
+            children.push(geno);
+        }
     }
 
     // 4. Parallel blueprint derivation
