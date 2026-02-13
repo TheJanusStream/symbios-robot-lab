@@ -18,11 +18,11 @@ pub const MORPHOLOGY_POOL: &[&str] = &[
 #define hip_vel 5
 #define knee_min -2.0
 #define knee_max 0.2
-#define knee_eff 30
+#define knee_eff 3000
 #define knee_vel 5
 #define lw 0.15
 #define seg 1.5
-omega: !(0.6) K(0.2, 0.3) Si [ &(90) L ] [ \\(90) &(90) L ] [ |(1) &(90) L ] [ /(90) &(90) L ]
+omega: !(0.6) O Si !(0.2) [ &(90)  C(0.5) ^(60) L] [ \\(90) &(90) C(0.5) ^(60) L] [ \\(180) &(90) C(0.5) ^(60) L] [ /(90) &(90) C(0.5) ^(60) L]
 0.3 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) St
 0.4 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/2.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/2.0) St
 0.3 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) St",
@@ -31,7 +31,7 @@ omega: !(0.6) K(0.2, 0.3) Si [ &(90) L ] [ \\(90) &(90) L ] [ |(1) &(90) L ] [ /
     "\
 #define jmin -1.2
 #define jmax 1.2
-#define eff 40
+#define eff 4000
 #define vel 5
 #define lw 0.12
 #define seg 1.0
@@ -45,11 +45,11 @@ omega: !(0.4) K(0.15, 0.25) Si S
     "\
 #define jmin -1.57
 #define jmax 1.57
-#define eff 40
+#define eff 4000
 #define vel 5
 #define lw 0.12
 #define seg 1.0
-omega: !(0.5) K(0.2, 0.35) Si [ &(90) L ] [ \\(60) &(90) L ] [ \\(120) &(90) L ] [ |(1) &(90) L ] [ /(120) &(90) L ] [ /(60) &(90) L ]
+omega: !(0.5) O Si [ &(90) L ] [ \\(60) &(90) L ] [ \\(120) &(90) L ] [ |(1) &(90) L ] [ /(120) &(90) L ] [ /(60) &(90) L ]
 0.3 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St
 0.4 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg/2.0) Jl(jmin, jmax, eff, vel) J K(seg/2.0) St
 0.3 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg/3.0) Jl(jmin, jmax, eff, vel) J K(seg/3.0) Jl(jmin, jmax, eff, vel) J K(seg/3.0) St",
@@ -59,7 +59,7 @@ omega: !(0.5) K(0.2, 0.35) Si [ &(90) L ] [ \\(60) &(90) L ] [ \\(120) &(90) L ]
     "\
 #define jmin -0.8
 #define jmax 0.8
-#define eff 30
+#define eff 3000
 #define vel 8
 #define seg 0.35
 omega: !(0.3) K(0.15, 0.2) Si St S
@@ -70,11 +70,11 @@ S -> Jl(jmin, jmax, eff, vel) J K(seg) St S",
     "\
 #define hip_min -1.57
 #define hip_max 1.57
-#define eff 60
+#define eff 6000
 #define vel 5
 #define knee_min -2.0
 #define knee_max 0.2
-#define keff 40
+#define keff 4000
 #define kvel 5
 #define lw 0.18
 #define seg 0.6
@@ -82,13 +82,13 @@ omega: !(0.5) K(0.25, 0.4) Si [ &(90) L ] [ |(1) &(90) L ]
 L -> Jl(hip_min, hip_max, eff, vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, kvel) J K(seg) St",
     // ── Starfish ───────────────────────────────────────────────────────
     // 5 single-segment arms at 72° intervals. Radial symmetry.
-    // 6 modules, 5 joints, 1 IMU, 5 touch.
     "\
 #define jmin -1.0
 #define jmax 1.0
-#define eff 35
+#define eff 3500
 #define vel 5
 #define seg 0.5
-omega: !(0.5) K(0.2, 0.2) Si [ &(90) A ] [ \\(72) &(90) A ] [ \\(144) &(90) A ] [ /(144) &(90) A ] [ /(72) &(90) A ]
-A -> Jl(jmin, jmax, eff, vel) J K(seg) St",
+omega: !(0.5) O Si [ &(140) A  St] [ \\(72) &(140) A  St] [ \\(144) &(140) A  St] [ /(144) &(140) A  St] [ /(72) &(140) A  St]
+0.1 : A -> Jl(jmin, jmax, eff, vel) J K(seg) A
+0.9 : A -> Jl(jmin, jmax, eff, vel) J K(seg)",
 ];
