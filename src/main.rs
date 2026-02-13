@@ -31,7 +31,7 @@ fn main() {
         .init_resource::<core::population::Population>()
         .init_resource::<bevy_symbios::materials::MaterialSettingsMap>()
         .init_resource::<simulation::generation::GenerationTimer>()
-        .init_resource::<simulation::generation::EliteArchive>()
+        .init_resource::<simulation::generation::ParentPool>()
         .init_resource::<ui::lab_panel::Telemetry>()
         .init_resource::<visuals::ui::CameraTarget>()
         // Startup

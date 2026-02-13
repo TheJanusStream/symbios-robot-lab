@@ -6,9 +6,8 @@ use symbios_robot::RobotBlueprint;
 pub struct Agent {
     pub genotype: AgentGenotype,
     pub fitness: f32,
-    /// MAP-Elites behavioral descriptor [morphological_complexity, body_size].
-    /// Values normalized to [0, 1]. Set at spawn from the robot blueprint.
-    pub descriptor: [f32; 2],
+    /// Number of motors (hinge joints) in this robot (for NSGA-II minimization objective).
+    pub num_motors: usize,
     /// The root entity of the spawned robot in the Bevy world
     pub root_entity: Option<Entity>,
     /// Cached blueprint from L-System derivation, avoids re-parsing at spawn.
@@ -47,7 +46,7 @@ mod tests {
         Agent {
             genotype: AgentGenotype::new("omega: B(1)".to_string(), &config, rng),
             fitness: 0.0,
-            descriptor: [0.0, 0.0],
+            num_motors: 0,
             root_entity: None,
             cached_blueprint: None,
         }

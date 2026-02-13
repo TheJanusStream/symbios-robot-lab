@@ -92,7 +92,7 @@ pub fn manage_generations(
                 Agent {
                     genotype: AgentGenotype::new(morphology.to_string(), &neat_config, &mut rng),
                     fitness: 0.0,
-                    descriptor: [0.0, 0.0],
+                    num_motors: num_outputs,
                     root_entity: None,
                     cached_blueprint: blueprint,
                 }

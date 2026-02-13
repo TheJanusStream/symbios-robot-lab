@@ -5,9 +5,10 @@ use crate::simulation::lifecycle::derive_blueprint;
 use crate::ui::lab_panel::Telemetry;
 use bevy::prelude::*;
 use bevy::tasks::ComputeTaskPool;
-use rand::SeedableRng;
+use rand::Rng;
+use rand::prelude::SeedableRng;
 use rand_pcg::Pcg64;
-use std::collections::BTreeMap;
+use symbios_genetics::algorithms::nsga2::{Nsga2, SortWrapper};
 use symbios_genetics::{Genotype, Phenotype};
 use symbios_neat::NeatConfig;
 use symbios_robot::RobotBlueprint;
@@ -28,98 +29,107 @@ impl Default for GenerationTimer {
     }
 }
 
-/// MAP-Elites archive: a grid of best-in-niche individuals.
+/// NSGA-II parent pool: ranked individuals from previous generations.
 ///
-/// 2D behavioral descriptor:
-///   - Axis 0: morphological complexity (num_hinge_joints / 20, clamped to [0,1])
-///   - Axis 1: body size (num_modules / 25, clamped to [0,1])
+/// Stores evaluated `Phenotype`s with two objectives:
+///   - Objective 0: displacement (higher is better — maximize locomotion)
+///   - Objective 1: negative module count (higher is better — minimize complexity)
 ///
-/// Each cell stores the highest-fitness individual that maps to that niche.
-#[derive(Resource)]
-pub struct EliteArchive {
-    archive: BTreeMap<[usize; 2], Phenotype<AgentGenotype>>,
-    /// Cached list of occupied keys for O(1) random parent sampling.
-    keys: Vec<[usize; 2]>,
-    /// Number of bins per descriptor dimension.
-    pub resolution: usize,
+/// At each generation boundary the current population is combined with the
+/// parent pool, non-dominated sorted, and truncated to `population_size`.
+/// Binary tournament selection from this pool produces the next generation.
+#[derive(Resource, Default)]
+pub struct ParentPool {
+    /// Ranked phenotypes from previous generation(s).
+    pool: Vec<Phenotype<AgentGenotype>>,
+    /// Pareto rank per individual (0 = non-dominated front).
+    ranks: Vec<usize>,
+    /// Crowding distance per individual.
+    crowding: Vec<f32>,
 }
 
-impl Default for EliteArchive {
-    fn default() -> Self {
-        Self {
-            archive: BTreeMap::new(),
-            keys: Vec::new(),
-            resolution: 10,
-        }
-    }
-}
-
-impl EliteArchive {
-    /// Maps a behavioral descriptor (values in [0,1]) to grid cell indices.
-    fn map_to_index(&self, descriptor: &[f32; 2]) -> [usize; 2] {
-        let map_dim = |v: f32| -> usize {
-            let scaled = v.clamp(0.0, 1.0) * self.resolution as f32;
-            (scaled.floor() as usize).min(self.resolution - 1)
-        };
-        [map_dim(descriptor[0]), map_dim(descriptor[1])]
+impl ParentPool {
+    /// Number of individuals in the pool.
+    pub fn len(&self) -> usize {
+        self.pool.len()
     }
 
-    /// Inserts an individual into the archive if its cell is empty or it has
-    /// strictly higher fitness than the current occupant.
-    fn insert(&mut self, genotype: AgentGenotype, fitness: f32, descriptor: [f32; 2]) {
-        if !fitness.is_finite() {
-            return;
-        }
-        let idx = self.map_to_index(&descriptor);
+    /// Best displacement (objective 0) across the pool.
+    pub fn best_fitness(&self) -> f32 {
+        self.pool.iter().map(|p| p.fitness).fold(0.0_f32, f32::max)
+    }
 
-        let dominated = self
-            .archive
-            .get(&idx)
-            .is_some_and(|e| fitness <= e.fitness && !e.fitness.is_nan());
+    /// Number of individuals on the Pareto front (rank 0).
+    pub fn front_size(&self) -> usize {
+        self.ranks.iter().filter(|&&r| r == 0).count()
+    }
 
-        if !dominated {
-            let is_new = !self.archive.contains_key(&idx);
-            self.archive.insert(
-                idx,
-                Phenotype {
-                    genotype,
-                    fitness,
-                    objectives: vec![fitness],
-                    descriptor: descriptor.to_vec(),
-                },
-            );
-            if is_new {
-                self.keys.push(idx);
+    /// Clears the pool (used when reinitializing the population).
+    pub fn clear(&mut self) {
+        self.pool.clear();
+        self.ranks.clear();
+        self.crowding.clear();
+    }
+
+    /// Binary tournament: pick two random individuals, return the better one.
+    /// Prefers lower rank; ties broken by higher crowding distance.
+    fn binary_tournament(&self, rng: &mut impl Rng) -> usize {
+        let n = self.pool.len();
+        let i = rng.random_range(0..n);
+        let j = rng.random_range(0..n);
+        match self.ranks[i].cmp(&self.ranks[j]) {
+            std::cmp::Ordering::Less => i,
+            std::cmp::Ordering::Greater => j,
+            std::cmp::Ordering::Equal => {
+                if self.crowding[i] >= self.crowding[j] {
+                    i
+                } else {
+                    j
+                }
             }
         }
     }
 
-    /// Returns the number of occupied cells.
-    pub fn len(&self) -> usize {
-        self.archive.len()
-    }
+    /// Inserts evaluated agents, combines with existing pool, runs
+    /// non-dominated sort + crowding distance, and truncates to `cap`.
+    fn update(&mut self, evaluated: Vec<Phenotype<AgentGenotype>>, cap: usize) {
+        let mut combined = std::mem::take(&mut self.pool);
+        combined.extend(evaluated);
 
-    /// Samples a random parent genotype from the archive.
-    fn sample_parent(&self, rng: &mut impl rand::Rng) -> Option<&AgentGenotype> {
-        if self.keys.is_empty() {
-            return None;
+        if combined.is_empty() {
+            return;
         }
-        let key = &self.keys[rng.random_range(0..self.keys.len())];
-        self.archive.get(key).map(|p| &p.genotype)
-    }
 
-    /// Returns the best fitness across all archive cells.
-    pub fn best_fitness(&self) -> f32 {
-        self.archive
-            .values()
-            .map(|p| p.fitness)
-            .fold(0.0_f32, f32::max)
-    }
+        let fronts = Nsga2::<AgentGenotype>::fast_non_dominated_sort(&combined);
+        let mut selected: Vec<SortWrapper> = Vec::with_capacity(cap);
 
-    /// Clears the archive (used when reinitializing the population).
-    pub fn clear(&mut self) {
-        self.archive.clear();
-        self.keys.clear();
+        for (rank, indices) in fronts.iter().enumerate() {
+            let mut front: Vec<SortWrapper> = indices
+                .iter()
+                .map(|&i| SortWrapper {
+                    index: i,
+                    rank,
+                    distance: 0.0,
+                })
+                .collect();
+
+            Nsga2::<AgentGenotype>::calculate_crowding_distance(&mut front, &combined);
+
+            if selected.len() + front.len() <= cap {
+                selected.extend(front);
+            } else {
+                front.sort_by(|a, b| b.distance.total_cmp(&a.distance));
+                selected.extend(front.into_iter().take(cap - selected.len()));
+                break;
+            }
+        }
+
+        self.ranks = selected.iter().map(|w| w.rank).collect();
+        self.crowding = selected.iter().map(|w| w.distance).collect();
+        self.pool = selected
+            .into_iter()
+            .map(|w| combined[w.index].clone())
+            .collect();
     }
 }
 
@@ -140,8 +150,8 @@ pub fn activate_timer(
     }
 }
 
-/// MAP-Elites end-of-generation: insert evaluated agents into the archive,
-/// then sample parents and mutate to create the next generation.
+/// NSGA-II end-of-generation: rank evaluated agents by [displacement, -modules],
+/// select parents via binary tournament, crossover + mutate to create offspring.
 pub fn tick_generation(
     mut commands: Commands,
     time: Res<Time>,
@@ -149,7 +159,7 @@ pub fn tick_generation(
     mut population: ResMut<Population>,
     mut gen_timer: ResMut<GenerationTimer>,
     mut telemetry: ResMut<Telemetry>,
-    mut archive: ResMut<EliteArchive>,
+    mut parent_pool: ResMut<ParentPool>,
 ) {
     if !gen_timer.active {
         return;
@@ -163,45 +173,68 @@ pub fn tick_generation(
     // --- End of Generation ---
     let generation = population.generation;
 
-    // 1. Insert all evaluated agents into the MAP-Elites archive
-    for agent in &population.agents {
-        archive.insert(agent.genotype.clone(), agent.fitness, agent.descriptor);
-    }
+    // 1. Convert evaluated agents to Phenotypes with NSGA-II objectives:
+    //    obj[0] = displacement (maximize)
+    //    obj[1] = -num_motors (maximize → minimizes motor count)
+    //    Agents with 0 motors (parse failures / degenerate morphologies) get -inf
+    //    on both objectives so any viable agent dominates them.
+    let evaluated: Vec<Phenotype<AgentGenotype>> = population
+        .agents
+        .iter()
+        .map(|agent| {
+            let objectives = if agent.num_motors > 0 {
+                vec![
+                    agent.fitness * agent.num_motors as f32,
+                    -(agent.num_motors as f32),
+                ]
+            } else {
+                vec![f32::NEG_INFINITY, f32::NEG_INFINITY]
+            };
+            Phenotype {
+                genotype: agent.genotype.clone(),
+                fitness: agent.fitness,
+                objectives,
+                descriptor: vec![],
+            }
+        })
+        .collect();
 
-    let best_fitness = archive.best_fitness();
+    // 2. Merge with parent pool and select top individuals via non-dominated sort
+    parent_pool.update(evaluated, config.population_size);
+
+    let best_fitness = parent_pool.best_fitness();
     info!(
-        "Generation {} complete. Archive: {}/{} cells, best fitness: {:.2}",
+        "Generation {} complete. Pool: {} individuals, Pareto front: {}, best displacement: {:.2}",
         generation,
-        archive.len(),
-        archive.resolution * archive.resolution,
+        parent_pool.len(),
+        parent_pool.front_size(),
         best_fitness,
     );
 
     telemetry.best_per_generation.push(best_fitness);
-    telemetry.archive_coverage = archive.len();
+    telemetry.pareto_front_size = parent_pool.front_size();
 
-    // 2. Sample parents from archive and create offspring via mutation.
-    //    Mutation is sequential (uses RNG), but blueprint derivation is
-    //    parallelized across the ComputeTaskPool to avoid a main-thread stall.
+    // 3. Binary tournament selection + crossover + mutation
     let mut rng = Pcg64::from_rng(&mut rand::rng());
     let mutation_rate = 0.3;
 
-    // 2a. Sequential: sample parents and mutate genotypes (fast, RNG-dependent)
     let mut children: Vec<AgentGenotype> = Vec::with_capacity(config.population_size);
     for _ in 0..config.population_size {
-        let parent = match archive.sample_parent(&mut rng) {
-            Some(p) => p,
-            None => continue,
-        };
-        let mut child = parent.clone();
+        if parent_pool.len() < 2 {
+            break;
+        }
+        let idx1 = parent_pool.binary_tournament(&mut rng);
+        let idx2 = parent_pool.binary_tournament(&mut rng);
+        let p1 = &parent_pool.pool[idx1].genotype;
+        let p2 = &parent_pool.pool[idx2].genotype;
+
+        let mut child = p1.crossover(p2, &mut rng);
         child.mutate(&mut rng, mutation_rate);
         child.generation = generation + 1;
         children.push(child);
     }
 
-    // 2b. Parallel: derive blueprints on the compute thread pool.
-    //     Each derive_blueprint call parses L-System, expands rules, and builds
-    //     a RobotBlueprint — the most expensive part of generation transition.
+    // 4. Parallel blueprint derivation
     let pool = ComputeTaskPool::get();
     let blueprints: Vec<Option<(RobotBlueprint, usize, usize)>> = pool.scope(|s| {
         for child in &children {
@@ -210,17 +243,17 @@ pub fn tick_generation(
         }
     });
 
-    // 2c. Sequential: assemble agents, rebuild NEAT genomes where topology changed
+    // 5. Assemble agents, rebuild NEAT genomes where topology changed
     let mut next_gen: Vec<Agent> = Vec::with_capacity(children.len());
     for (mut child, derived) in children.into_iter().zip(blueprints) {
         let cached_blueprint;
+        let num_motors;
 
         if let Some((bp, ni, no)) = derived {
             child.cached_topology = Some((ni, no));
+            num_motors = no; // num_outputs == hinge joint count
             cached_blueprint = Some(bp);
 
-            // If morphology changed topology, rebuild the NEAT genome to match.
-            // Otherwise keep the inherited (and potentially mutated) genome.
             if ni != child.controller.input_ids.len() || no != child.controller.output_ids.len() {
                 let cfg = NeatConfig {
                     num_inputs: ni,
@@ -232,32 +265,33 @@ pub fn tick_generation(
             }
         } else {
             child.cached_topology = None;
+            num_motors = 0;
             cached_blueprint = None;
         }
 
         next_gen.push(Agent {
             genotype: child,
             fitness: 0.0,
-            descriptor: [0.0, 0.0],
+            num_motors,
             root_entity: None,
             cached_blueprint,
         });
     }
 
-    // 3. Despawn all old robot hierarchies
+    // 6. Despawn all old robot hierarchies
     for agent in &population.agents {
         if let Some(root) = agent.root_entity {
             commands.entity(root).try_despawn();
         }
     }
 
-    // 4. Install next generation
+    // 7. Install next generation
     *population = Population {
         agents: next_gen,
         generation: generation + 1,
     };
 
-    // 5. Reset timer
+    // 8. Reset timer
     gen_timer.timer = Timer::from_seconds(config.generation_duration, TimerMode::Once);
     gen_timer.timer.reset();
     gen_timer.active = false;

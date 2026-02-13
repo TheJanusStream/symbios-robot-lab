@@ -54,11 +54,7 @@ pub fn spawn_agents(
 
         let (num_modules, num_hinges, num_imus, num_touches) = count_blueprint_stats(&blueprint);
 
-        // MAP-Elites behavioral descriptor: [complexity, body_size] in [0,1]
-        agent.descriptor = [
-            (num_hinges as f32 / 20.0).min(1.0),
-            (num_modules as f32 / 25.0).min(1.0),
-        ];
+        agent.num_motors = num_hinges;
 
         info!(
             "Spawning Agent {}: {} modules, {} joints, {} IMU, {} touch",
