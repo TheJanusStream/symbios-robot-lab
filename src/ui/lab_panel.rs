@@ -176,6 +176,144 @@ pub fn render_ui(
             );
         }
 
+        // Pareto front scatter plot
+        let obj_data = parent_pool.objective_data();
+        if obj_data.len() >= 2 {
+            ui.separator();
+            ui.label("Pareto front (fitness vs efficiency):");
+
+            let graph_width = ui.available_width();
+            let graph_height = 120.0;
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(graph_width, graph_height), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+
+            // Background
+            painter.rect_filled(rect, 4.0, egui::Color32::from_gray(30));
+
+            // Compute axis ranges from finite data
+            let (mut x_min, mut x_max) = (f32::MAX, f32::MIN);
+            let (mut y_min, mut y_max) = (f32::MAX, f32::MIN);
+            for &(o0, o1, _) in &obj_data {
+                x_min = x_min.min(o0);
+                x_max = x_max.max(o0);
+                y_min = y_min.min(o1);
+                y_max = y_max.max(o1);
+            }
+
+            // Pad axes to avoid zero-range
+            let x_range = (x_max - x_min).max(0.01);
+            let y_range = (y_max - y_min).max(0.01);
+            let pad = 0.05;
+            x_min -= x_range * pad;
+            x_max += x_range * pad;
+            y_min -= y_range * pad;
+            y_max += y_range * pad;
+            let x_range = x_max - x_min;
+            let y_range = y_max - y_min;
+
+            let margin = 4.0;
+            let plot_rect = rect.shrink(margin);
+
+            // Map data to screen coordinates
+            let to_screen = |o0: f32, o1: f32| -> egui::Pos2 {
+                let sx = plot_rect.min.x + ((o0 - x_min) / x_range) * plot_rect.width();
+                let sy = plot_rect.max.y - ((o1 - y_min) / y_range) * plot_rect.height();
+                egui::pos2(sx, sy)
+            };
+
+            // Grid lines
+            for frac in [0.25, 0.5, 0.75] {
+                let y = plot_rect.max.y - frac * plot_rect.height();
+                painter.line_segment(
+                    [egui::pos2(plot_rect.min.x, y), egui::pos2(plot_rect.max.x, y)],
+                    egui::Stroke::new(0.5, egui::Color32::from_gray(45)),
+                );
+                let x = plot_rect.min.x + frac * plot_rect.width();
+                painter.line_segment(
+                    [egui::pos2(x, plot_rect.min.y), egui::pos2(x, plot_rect.max.y)],
+                    egui::Stroke::new(0.5, egui::Color32::from_gray(45)),
+                );
+            }
+
+            // Collect and sort front points (rank 0) by objective 0 to draw a connected line
+            let mut front_points: Vec<egui::Pos2> = obj_data
+                .iter()
+                .filter(|d| d.2 == 0)
+                .map(|&(o0, o1, _)| to_screen(o0, o1))
+                .collect();
+            front_points.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+            // Draw front line
+            for window in front_points.windows(2) {
+                painter.line_segment(
+                    [window[0], window[1]],
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(80, 200, 120, 100)),
+                );
+            }
+
+            // Draw dominated points first (behind), then front points on top
+            let dot_radius = 3.0;
+            let dominated_color = egui::Color32::from_rgb(100, 100, 120);
+            let front_color = egui::Color32::from_rgb(80, 200, 120);
+
+            for &(o0, o1, rank) in &obj_data {
+                if rank > 0 {
+                    painter.circle_filled(to_screen(o0, o1), dot_radius * 0.7, dominated_color);
+                }
+            }
+            for &(o0, o1, rank) in &obj_data {
+                if rank == 0 {
+                    painter.circle_filled(to_screen(o0, o1), dot_radius, front_color);
+                }
+            }
+
+            // Axis labels
+            painter.text(
+                plot_rect.left_bottom() + egui::vec2(2.0, -2.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{:.1}", y_min),
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
+            painter.text(
+                plot_rect.left_top() + egui::vec2(2.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                format!("{:.1}", y_max),
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
+            painter.text(
+                plot_rect.right_bottom() + egui::vec2(-2.0, -2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("{:.1}", x_max),
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
+
+            // Hover tooltip
+            if let Some(hover_pos) = response.hover_pos() {
+                let closest = obj_data
+                    .iter()
+                    .map(|&(o0, o1, rank)| {
+                        let sp = to_screen(o0, o1);
+                        let dist = sp.distance(hover_pos);
+                        (dist, o0, o1, rank)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+
+                if let Some((dist, o0, o1, rank)) = closest
+                    && dist < 15.0
+                {
+                    response.on_hover_ui(|ui| {
+                        ui.label(format!("Fitness: {:.3}", o0));
+                        ui.label(format!("Efficiency: {:.3}", o1));
+                        ui.label(format!("Rank: {}", rank));
+                    });
+                }
+            }
+        }
+
         ui.separator();
 
         // Controls

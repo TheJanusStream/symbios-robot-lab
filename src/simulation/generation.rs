@@ -65,6 +65,24 @@ impl ParentPool {
         self.ranks.iter().filter(|&&r| r == 0).count()
     }
 
+    /// Returns `(objective_0, objective_1, rank)` for each individual in the pool.
+    /// Individuals with non-finite objectives are excluded.
+    pub fn objective_data(&self) -> Vec<(f32, f32, usize)> {
+        self.pool
+            .iter()
+            .zip(self.ranks.iter())
+            .filter_map(|(pheno, &rank)| {
+                let o0 = *pheno.objectives.first()?;
+                let o1 = *pheno.objectives.get(1)?;
+                if o0.is_finite() && o1.is_finite() {
+                    Some((o0, o1, rank))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Clears the pool (used when reinitializing the population).
     pub fn clear(&mut self) {
         self.pool.clear();
