@@ -1,4 +1,4 @@
-use avian3d::PhysicsPlugins;
+use avian3d::{PhysicsPlugins, prelude::SubstepCount};
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
@@ -27,6 +27,7 @@ fn main() {
         ))
         .add_message::<SpawnRequest>()
         // Resources
+        .insert_resource(SubstepCount(12))
         .init_resource::<core::config::LabConfig>()
         .init_resource::<core::population::Population>()
         .init_resource::<bevy_symbios::materials::MaterialSettingsMap>()
