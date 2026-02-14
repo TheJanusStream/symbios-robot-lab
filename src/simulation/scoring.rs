@@ -30,8 +30,60 @@ const MIN_Y: f32 = -5.0;
 const MAX_Y: f32 = 10.0;
 
 /// Only recalculate displacement fitness every N fixed steps.
-/// Explosion checks still run every step for safety.
 const FITNESS_CALC_INTERVAL: u32 = 4;
+
+/// Checks a single robot for physics explosion each fixed step, cycling
+/// through the population round-robin. Runs from the first frame (no
+/// settling gate) so unstable robots are culled before wasting sensor
+/// gathering and brain evaluation work.
+pub fn check_explosion(
+    mut commands: Commands,
+    brains: Query<(&RobotBrain, &Transform)>,
+    modules: Query<(&Transform, &LinearVelocity), Without<RobotBrain>>,
+    mut population: ResMut<Population>,
+    mut cursor: Local<usize>,
+) {
+    let pop = population.bypass_change_detection();
+    let pop_size = pop.agents.len();
+    if pop_size == 0 {
+        return;
+    }
+
+    let check_index = *cursor % pop_size;
+    *cursor = cursor.wrapping_add(1);
+
+    for (brain, transform) in &brains {
+        if brain.agent_index != check_index {
+            continue;
+        }
+
+        let body_pos = transform.translation;
+        let mut exploded = !body_pos.is_finite() || body_pos.y < MIN_Y || body_pos.y > MAX_Y;
+
+        for &module_entity in &brain.module_entities {
+            if exploded {
+                break;
+            }
+            if let Ok((tf, vel)) = modules.get(module_entity)
+                && (!tf.translation.is_finite()
+                    || vel.length_squared() > MAX_MODULE_SPEED_SQ
+                    || tf.translation.distance_squared(body_pos) > EXPLOSION_RADIUS_SQ)
+            {
+                exploded = true;
+            }
+        }
+
+        if exploded
+            && let Some(agent) = pop.agents.get_mut(check_index)
+        {
+            agent.fitness = 0.0;
+            if let Some(root) = agent.root_entity.take() {
+                commands.entity(root).try_despawn();
+            }
+        }
+        break;
+    }
+}
 
 /// Accumulates energy consumed and posture metrics every FixedUpdate tick
 /// after the settling period. Energy is estimated as |target_velocity| * max_torque * dt
@@ -78,17 +130,14 @@ pub fn track_metrics(
 ///
 /// During the settling period (first third of a generation), fitness remains 0.
 /// Once settling ends, the body's position is snapshotted as baseline.
-/// Robots whose parts have separated (physics explosion) are despawned immediately
-/// and receive fitness 0.
+/// Explosion detection is handled separately by `check_explosion`.
 ///
-/// Explosion checks run every fixed step. Fitness is only
-/// recalculated every `FITNESS_CALC_INTERVAL` steps to reduce redundant work.
+/// Fitness is only recalculated every `FITNESS_CALC_INTERVAL` steps to
+/// reduce redundant work.
 ///
 /// Runs in `FixedUpdate`, locked to the physics timestep.
 pub fn update_fitness_scores(
-    mut commands: Commands,
     mut brains: Query<(&RobotBrain, &Transform, &mut FitnessBaseline)>,
-    modules: Query<(&Transform, &LinearVelocity), Without<RobotBrain>>,
     mut population: ResMut<Population>,
     gen_timer: Res<GenerationTimer>,
     config: Res<LabConfig>,
@@ -112,44 +161,13 @@ pub fn update_fitness_scores(
     }
 
     *step_counter += 1;
-    let calc_fitness = step_counter.is_multiple_of(FITNESS_CALC_INTERVAL);
+    if !step_counter.is_multiple_of(FITNESS_CALC_INTERVAL) {
+        return;
+    }
 
     for (brain, transform, mut baseline) in &mut brains {
         let idx = brain.agent_index;
         let body_pos = transform.translation;
-
-        // Detect physics explosion via body-level signals:
-        // 1. NaN/Inf position  2. Out-of-bounds
-        let mut exploded = !body_pos.is_finite() || body_pos.y < MIN_Y || body_pos.y > MAX_Y;
-
-        // Check module-level signals via direct entity refs:
-        // 3. Module drift  4. Excessive velocity
-        if !exploded {
-            for &module_entity in &brain.module_entities {
-                if let Ok((tf, vel)) = modules.get(module_entity)
-                    && (!tf.translation.is_finite()
-                        || vel.length_squared() > MAX_MODULE_SPEED_SQ
-                        || tf.translation.distance_squared(body_pos) > EXPLOSION_RADIUS_SQ)
-                {
-                    exploded = true;
-                    break;
-                }
-            }
-        }
-
-        if exploded {
-            if let Some(agent) = pop.agents.get_mut(idx) {
-                agent.fitness = 0.0;
-                if let Some(root) = agent.root_entity.take() {
-                    commands.entity(root).try_despawn();
-                }
-            }
-            continue;
-        }
-
-        if !calc_fitness {
-            continue;
-        }
 
         // Snapshot baseline on first frame after settling
         let base = *baseline.0.get_or_insert(body_pos);

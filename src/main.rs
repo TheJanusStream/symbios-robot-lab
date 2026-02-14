@@ -72,6 +72,7 @@ fn main() {
         .add_systems(
             FixedUpdate,
             (
+                simulation::scoring::check_explosion,
                 simulation::brain::gather_sensor_inputs,
                 simulation::brain::drive_motors,
                 simulation::scoring::track_metrics,
