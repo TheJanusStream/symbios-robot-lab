@@ -1,6 +1,6 @@
 use crate::core::population::Population;
 use crate::simulation::brain::{AgentImu, AgentJoint, AgentModule, AgentTouch, RobotBrain};
-use crate::simulation::brain::{INPUTS_PER_IMU, NUM_CLOCK_INPUTS};
+use crate::simulation::brain::{INPUTS_PER_IMU, INPUTS_PER_JOINT, INPUTS_PER_TOUCH, NUM_CLOCK_INPUTS};
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::simulation::scoring::FitnessBaseline;
 use bevy::prelude::*;
@@ -148,11 +148,19 @@ pub fn spawn_agents(
             }
         }
 
+        let joint_input_base =
+            NUM_CLOCK_INPUTS + num_imus * INPUTS_PER_IMU + num_touches * INPUTS_PER_TOUCH;
+        let mut joint_index = 0usize;
         let mut joint_entities = Vec::with_capacity(num_hinges);
         for &(joint_entity, joint_type) in &spawned.joints {
             if joint_type == JointType::Hinge {
-                commands.entity(joint_entity).insert(AgentJoint);
+                let input_offset = joint_input_base + joint_index * INPUTS_PER_JOINT;
+                commands.entity(joint_entity).insert(AgentJoint {
+                    brain_entity: body_entity,
+                    input_offset,
+                });
                 joint_entities.push(joint_entity);
+                joint_index += 1;
             }
         }
 

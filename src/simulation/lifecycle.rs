@@ -40,7 +40,7 @@ pub fn derive_blueprint(morphology: &str) -> Option<(RobotBlueprint, usize, usiz
         .filter(|j| j.joint_type == JointType::Hinge)
         .count();
 
-    let num_inputs = compute_num_inputs(num_imus, num_touches);
+    let num_inputs = compute_num_inputs(num_imus, num_touches, num_outputs);
     Some((blueprint, num_inputs, num_outputs))
 }
 

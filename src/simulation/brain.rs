@@ -6,9 +6,18 @@ use symbios_neat::{CppnEvaluator, EvalScratchpad};
 #[derive(Component)]
 pub struct AgentModule;
 
-/// Marker linking a joint entity back to its owning agent.
+/// Joint proprioception sensor attached to a hinge joint entity.
+/// Provides 1 input per tick: the current joint angle normalized to [-1, 1].
+///
+/// `brain_entity` and `input_offset` enable cache-friendly linear iteration,
+/// matching the pattern used by `AgentImu` and `AgentTouch`.
 #[derive(Component)]
-pub struct AgentJoint;
+pub struct AgentJoint {
+    /// Entity that holds this joint's `RobotBrain`.
+    pub brain_entity: Entity,
+    /// Index in `RobotBrain.sensor_inputs` for this joint's angle value.
+    pub input_offset: usize,
+}
 
 /// Holds the compiled NEAT network for a single agent, along with direct
 /// entity references to its sensors and joints for O(1) access.
@@ -73,18 +82,24 @@ pub const NUM_CLOCK_INPUTS: usize = 2;
 pub const INPUTS_PER_IMU: usize = 6;
 /// Each touch sensor contributes 1 value (contact boolean).
 pub const INPUTS_PER_TOUCH: usize = 1;
+/// Each hinge joint contributes 1 value (current angle / π, normalized to [-1, 1]).
+pub const INPUTS_PER_JOINT: usize = 1;
 
 /// Computes the total number of NEAT inputs for a given sensor topology.
 ///
 /// Layout:
-///   0..2:          sin(t), cos(t)  — oscillation clocks
-///   2..2+6N_imu:   linear accel (x,y,z) + angular accel (x,y,z) per IMU
-///   ..+N_touch:    contact flag per touch sensor
+///   0..2:                sin(t), cos(t)  — oscillation clocks
+///   2..2+6N_imu:         linear accel (x,y,z) + angular accel (x,y,z) per IMU
+///   ..+N_touch:          contact flag per touch sensor
+///   ..+N_hinge:          current angle per hinge joint (normalized to [-1, 1])
 ///
 /// Outputs (one per hinge joint):
 ///   Each output is tanh-activated → [-1, 1], mapped to target_velocity.
-pub fn compute_num_inputs(num_imus: usize, num_touches: usize) -> usize {
-    NUM_CLOCK_INPUTS + num_imus * INPUTS_PER_IMU + num_touches * INPUTS_PER_TOUCH
+pub fn compute_num_inputs(num_imus: usize, num_touches: usize, num_hinges: usize) -> usize {
+    NUM_CLOCK_INPUTS
+        + num_imus * INPUTS_PER_IMU
+        + num_touches * INPUTS_PER_TOUCH
+        + num_hinges * INPUTS_PER_JOINT
 }
 
 /// Maximum motor speed (rad/s) that an output of ±1 maps to.
@@ -117,6 +132,8 @@ pub fn gather_sensor_inputs(
     mut brains: Query<&mut RobotBrain>,
     mut imus: Query<(&mut AgentImu, &LinearVelocity, &AngularVelocity)>,
     touches: Query<(&AgentTouch, Option<&CollidingEntities>)>,
+    agent_joints: Query<(&AgentJoint, &RevoluteJoint)>,
+    rotations: Query<&Rotation>,
     time: Res<Time>,
 ) {
     let t = time.elapsed_secs();
@@ -162,6 +179,40 @@ pub fn gather_sensor_inputs(
             && touch.input_offset < brain.sensor_inputs.len()
         {
             brain.sensor_inputs[touch.input_offset] = contact;
+        }
+    }
+
+    // Phase 4: Linear pass over all hinge joint angle sensors.
+    // Computes the signed angle around the hinge axis from the two body
+    // rotations and their local joint frames, normalized to [-1, 1].
+    for (agent_joint, joint) in &agent_joints {
+        let (Ok(rot1), Ok(rot2)) = (rotations.get(joint.body1), rotations.get(joint.body2))
+        else {
+            continue;
+        };
+        let basis1 = joint.local_basis1().unwrap_or(Quat::IDENTITY);
+        let basis2 = joint.local_basis2().unwrap_or(Quat::IDENTITY);
+        let axis = joint.hinge_axis;
+
+        // Perpendicular reference vector to the hinge axis.
+        let perp = if axis.x.abs() < 0.9 {
+            axis.cross(Vec3::X).normalize()
+        } else {
+            axis.cross(Vec3::Y).normalize()
+        };
+
+        let a1 = (rot1.0 * basis1) * axis;
+        let b1 = (rot1.0 * basis1) * perp;
+        let b2 = (rot2.0 * basis2) * perp;
+
+        let sin_angle = b1.cross(b2).dot(a1);
+        let cos_angle = b1.dot(b2);
+        let angle = sin_angle.atan2(cos_angle);
+
+        if let Ok(mut brain) = brains.get_mut(agent_joint.brain_entity)
+            && agent_joint.input_offset < brain.sensor_inputs.len()
+        {
+            brain.sensor_inputs[agent_joint.input_offset] = angle * std::f32::consts::FRAC_1_PI;
         }
     }
 }
