@@ -1,6 +1,6 @@
 use crate::core::config::LabConfig;
 use crate::core::population::Population;
-use crate::simulation::brain::RobotBrain;
+use crate::simulation::brain::{MAX_MOTOR_TORQUE, RobotBrain};
 use crate::simulation::generation::GenerationTimer;
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -33,13 +33,55 @@ const MAX_Y: f32 = 10.0;
 /// Explosion checks still run every step for safety.
 const FITNESS_CALC_INTERVAL: u32 = 4;
 
-/// Calculates fitness as horizontal displacement from the settled baseline.
+/// Accumulates energy consumed and posture metrics every FixedUpdate tick
+/// after the settling period. Energy is estimated as |target_velocity| * max_torque * dt
+/// per joint. Posture tracks root up-alignment (dot product with world up) and height.
+///
+/// Runs in `FixedUpdate` after `drive_motors`, before `update_fitness_scores`.
+pub fn track_metrics(
+    mut brains: Query<(&mut RobotBrain, &Transform)>,
+    joints: Query<&RevoluteJoint>,
+    gen_timer: Res<GenerationTimer>,
+    config: Res<LabConfig>,
+    time: Res<Time>,
+) {
+    let settled = gen_timer.active
+        && gen_timer.timer.elapsed_secs() >= config.generation_duration * SETTLING_FRACTION;
+    if !settled {
+        return;
+    }
+
+    let dt = time.delta_secs();
+
+    for (mut brain, transform) in &mut brains {
+        // Energy: sum |target_velocity * max_torque| * dt across all joints
+        let mut tick_energy = 0.0_f32;
+        for &joint_entity in &brain.joint_entities {
+            if let Ok(joint) = joints.get(joint_entity) {
+                tick_energy += joint.motor.target_velocity.abs() * MAX_MOTOR_TORQUE * dt;
+            }
+        }
+        brain.energy_consumed += tick_energy;
+
+        // Posture: dot product of local up with world up
+        let local_up = transform.rotation * Vec3::NEG_Y;
+        brain.up_alignment_sum += local_up.dot(Vec3::Y);
+        brain.height_sum += transform.translation.y;
+        brain.metric_ticks += 1;
+    }
+}
+
+/// Walker fitness using displacement, posture, and energy efficiency.
+///
+/// Primary fitness value: displacement * average_up_alignment.
+/// NSGA-II objectives are set in `tick_generation`.
+///
 /// During the settling period (first third of a generation), fitness remains 0.
-/// Once settling ends, the body's current position is snapshotted as baseline.
+/// Once settling ends, the body's position is snapshotted as baseline.
 /// Robots whose parts have separated (physics explosion) are despawned immediately
 /// and receive fitness 0.
 ///
-/// Explosion checks run every fixed step. Displacement fitness is only
+/// Explosion checks run every fixed step. Fitness is only
 /// recalculated every `FITNESS_CALC_INTERVAL` steps to reduce redundant work.
 ///
 /// Runs in `FixedUpdate`, locked to the physics timestep.
@@ -113,10 +155,33 @@ pub fn update_fitness_scores(
         let base = *baseline.0.get_or_insert(body_pos);
 
         let displacement = body_pos - base;
-        let fitness = Vec2::new(displacement.x, displacement.z).length();
+        let horiz_displacement = Vec2::new(displacement.x, displacement.z).length();
+
+        // Walker fitness: displacement * average up-alignment
+        let avg_up = if brain.metric_ticks > 0 {
+            (brain.up_alignment_sum / brain.metric_ticks as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        let avg_height = if brain.metric_ticks > 0 {
+            (brain.height_sum / brain.metric_ticks as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        let fitness = horiz_displacement * avg_up;
 
         if let Some(agent) = pop.agents.get_mut(idx) {
             agent.fitness = if fitness.is_finite() { fitness } else { 0.0 };
+            agent.displacement = if horiz_displacement.is_finite() {
+                horiz_displacement
+            } else {
+                0.0
+            };
+            agent.energy_consumed = brain.energy_consumed;
+            agent.avg_up_alignment = avg_up;
+            agent.avg_height = avg_height;
         }
     }
 }

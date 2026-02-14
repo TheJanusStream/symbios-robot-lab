@@ -12,6 +12,14 @@ pub struct Agent {
     pub root_entity: Option<Entity>,
     /// Cached blueprint from L-System derivation, avoids re-parsing at spawn.
     pub cached_blueprint: Option<RobotBlueprint>,
+    /// Cumulative energy consumed during the evaluation period.
+    pub energy_consumed: f32,
+    /// Horizontal displacement from baseline (set by scoring).
+    pub displacement: f32,
+    /// Average root up-alignment during evaluation (0..1).
+    pub avg_up_alignment: f32,
+    /// Average height during evaluation (0..1).
+    pub avg_height: f32,
 }
 
 #[derive(Resource, Default)]
@@ -49,6 +57,10 @@ mod tests {
             num_motors: 0,
             root_entity: None,
             cached_blueprint: None,
+            energy_consumed: 0.0,
+            displacement: 0.0,
+            avg_up_alignment: 0.0,
+            avg_height: 0.0,
         }
     }
 

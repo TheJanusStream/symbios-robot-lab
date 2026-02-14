@@ -33,8 +33,8 @@ impl Default for GenerationTimer {
 /// NSGA-II parent pool: ranked individuals from previous generations.
 ///
 /// Stores evaluated `Phenotype`s with two objectives:
-///   - Objective 0: displacement (higher is better — maximize locomotion)
-///   - Objective 1: negative module count (higher is better — minimize complexity)
+///   - Objective 0: displacement * avg_up_alignment (walker fitness — maximize)
+///   - Objective 1: -(energy / displacement) (energy efficiency — maximize, i.e. minimize energy per meter)
 ///
 /// At each generation boundary the current population is combined with the
 /// parent pool, non-dominated sorted, and truncated to `population_size`.
@@ -174,20 +174,18 @@ pub fn tick_generation(
     // --- End of Generation ---
     let generation = population.generation;
 
-    // 1. Convert evaluated agents to Phenotypes with NSGA-II objectives:
-    //    obj[0] = displacement (maximize)
-    //    obj[1] = -num_motors (maximize → minimizes motor count)
-    //    Agents with 0 motors (parse failures / degenerate morphologies) get -inf
-    //    on both objectives so any viable agent dominates them.
+    // 1. Convert evaluated agents to Phenotypes with walker fitness objectives:
+    //    obj[0] = displacement * avg_up_alignment (walker fitness — maximize)
+    //    obj[1] = -(energy / displacement) (energy efficiency — maximize, lower cost is better)
+    //    Agents with 0 displacement or 0 motors get -inf so any viable agent dominates them.
     let evaluated: Vec<Phenotype<AgentGenotype>> = population
         .agents
         .iter()
         .map(|agent| {
-            let objectives = if agent.num_motors > 0 {
-                vec![
-                    agent.fitness * agent.num_motors as f32,
-                    -(agent.num_motors as f32),
-                ]
+            let objectives = if agent.num_motors > 4 && agent.displacement > f32::EPSILON {
+                let walker_fitness = agent.displacement * agent.avg_up_alignment * (agent.avg_height + 0.5); // Bonus for maintaining height
+                let energy_efficiency = -(agent.energy_consumed / agent.displacement);
+                vec![walker_fitness, energy_efficiency]
             } else {
                 vec![f32::NEG_INFINITY, f32::NEG_INFINITY]
             };
@@ -297,6 +295,10 @@ pub fn tick_generation(
             num_motors,
             root_entity: None,
             cached_blueprint,
+            energy_consumed: 0.0,
+            displacement: 0.0,
+            avg_up_alignment: 0.0,
+            avg_height: 0.0,
         });
     }
 

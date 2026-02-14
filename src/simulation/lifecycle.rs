@@ -95,6 +95,10 @@ pub fn manage_generations(
                     num_motors: num_outputs,
                     root_entity: None,
                     cached_blueprint: blueprint,
+                    energy_consumed: 0.0,
+                    displacement: 0.0,
+                    avg_up_alignment: 0.0,
+                    avg_height: 0.0,
                 }
             })
             .collect();

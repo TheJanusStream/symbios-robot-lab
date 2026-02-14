@@ -165,6 +165,10 @@ pub fn spawn_agents(
                 sensor_inputs: vec![0.0; num_inputs],
                 joint_entities,
                 module_entities,
+                energy_consumed: 0.0,
+                up_alignment_sum: 0.0,
+                height_sum: 0.0,
+                metric_ticks: 0,
             },
             FitnessBaseline(None),
         ));

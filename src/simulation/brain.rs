@@ -25,6 +25,14 @@ pub struct RobotBrain {
     pub joint_entities: Vec<Entity>,
     /// Module entities excluding the brain/body entity, for explosion checks.
     pub module_entities: Vec<Entity>,
+    /// Cumulative energy consumed: sum of |torque * angular_velocity| * dt.
+    pub energy_consumed: f32,
+    /// Running sum of root up-alignment (dot(local_up, world_up)) per tick.
+    pub up_alignment_sum: f32,
+    /// Running sum of root Y height per tick.
+    pub height_sum: f32,
+    /// Number of ticks metrics have been tracked (for computing averages).
+    pub metric_ticks: u32,
 }
 
 /// IMU sensor attached to a module rigid body.
@@ -83,7 +91,7 @@ pub fn compute_num_inputs(num_imus: usize, num_touches: usize) -> usize {
 const MAX_MOTOR_VELOCITY: f32 = 3.0;
 
 /// Maximum torque (N·m) each motor can apply.
-const MAX_MOTOR_TORQUE: f32 = 500.0;
+pub const MAX_MOTOR_TORQUE: f32 = 10000.0;
 
 /// Evaluate brains every Nth fixed step. Motors hold their last commanded
 /// velocity between evaluations. This halves NEAT CPU cost while

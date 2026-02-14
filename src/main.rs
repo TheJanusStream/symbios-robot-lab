@@ -73,6 +73,7 @@ fn main() {
             (
                 simulation::brain::gather_sensor_inputs,
                 simulation::brain::drive_motors,
+                simulation::scoring::track_metrics,
                 simulation::scoring::update_fitness_scores,
             )
                 .chain(),
