@@ -2,7 +2,10 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use symbios::System;
 use symbios::system::crossover::CrossoverConfig;
-use symbios::system::mutate::{MutationConfig, StructuralMutationConfig};
+use symbios::system::mutate::{
+    LiteralPromotionConfig, MutationConfig, OperatorFlipConfig, RuleDuplicationConfig,
+    StructuralMutationConfig, TopologicalMutationConfig,
+};
 use symbios_genetics::Genotype;
 use symbios_neat::NeatGenome;
 
@@ -44,27 +47,51 @@ impl Genotype for AgentGenotype {
     fn mutate<R: Rng>(&mut self, rng: &mut R, rate: f32) {
         // 1. Mutate Body (L-System Source)
         if let Ok(mut system) = System::from_source(&self.morphology) {
-            // Parametric mutation: jitter #define constants and rule literals
-            let param_config = MutationConfig {
-                constant_rate: rate as f64 * 0.5,
-                constant_strength: 0.2,
-                gaussian_jitter_scale: rate as f64 * 0.3,
-                gaussian_jitter_rate: rate as f64 * 0.5,
-                ..MutationConfig::default()
-            };
-            system.mutate_with_rng(rng, &param_config);
+            let r = rate as f64;
 
-            // Structural mutation: insert/delete/swap modules in rule successors
-            let struct_config = StructuralMutationConfig {
-                successor_rate: rate as f64 * 0.1,
+            // Parametric: jitter #define constants and rule probability weights
+            system.mutate_with_rng(rng, &MutationConfig {
+                rule_probability_rate: r * 0.3,
+                rule_probability_strength: 0.15,
+                constant_rate: r * 0.5,
+                constant_strength: 0.2,
+                gaussian_jitter_scale: r * 0.3,
+                gaussian_jitter_rate: r * 0.5,
+            });
+
+            // Structural: insert/delete/swap modules in rule successors + bytecode
+            system.structural_mutate_with_rng(rng, &StructuralMutationConfig {
+                successor_rate: r * 0.1,
                 insert_rate: 0.15,
                 delete_rate: 0.05,
                 swap_rate: 0.1,
-                bytecode_rate: rate as f64 * 0.1,
+                bytecode_rate: r * 0.1,
                 op_rate: 0.05,
                 push_perturbation: 0.3,
-            };
-            system.structural_mutate_with_rng(rng, &struct_config);
+            });
+
+            // Operator flip: swap Add<->Sub, Mul<->Div, Gt<->Lt, etc.
+            system.operator_flip_mutate_with_rng(rng, &OperatorFlipConfig {
+                arithmetic_flip_rate: r * 0.05,
+                relational_flip_rate: r * 0.05,
+            });
+
+            // Rule duplication: clone rules with perturbed probabilities
+            system.rule_duplication_mutate_with_rng(rng, &RuleDuplicationConfig {
+                duplication_rate: r * 0.03,
+                condition_perturbation: 0.1,
+            });
+
+            // Topological: swap spatial counterparts (+<->-, &<->^, \<->/)
+            system.topological_mutate_with_rng(rng, &TopologicalMutationConfig {
+                swap_rate: r * 0.05,
+            });
+
+            // Literal promotion: replace Push literals with matching #define refs
+            system.literal_to_constant_promote_with_rng(rng, &LiteralPromotionConfig {
+                promotion_rate: r * 0.1,
+                match_tolerance: 0.5,
+            });
 
             self.morphology = system.to_source();
         }

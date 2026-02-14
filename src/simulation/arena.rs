@@ -1,5 +1,7 @@
+use std::f32::consts::TAU;
+
 use avian3d::prelude::*;
-use bevy::prelude::*;
+use bevy::{post_process::bloom::Bloom, prelude::*};
 use bevy_panorbit_camera::PanOrbitCamera;
 
 pub fn setup_arena(
@@ -32,7 +34,16 @@ pub fn setup_arena(
 
     // 3. Camera
     commands.spawn((
-        Transform::from_translation(Vec3::new(0.0, 15.0, 30.0)).looking_at(Vec3::ZERO, Vec3::Y),
-        PanOrbitCamera::default(),
+        PanOrbitCamera {
+            focus: Vec3::new(-25.0, 0.0, -15.0),
+            yaw: Some(-TAU / 5.0),
+            pitch: Some(TAU / 8.0),
+            radius: Some(80.0),
+            button_orbit: MouseButton::Right,
+            button_pan: MouseButton::Middle,
+            ..default()
+        },
+        Camera3d::default(),
+        Bloom::NATURAL, // Enable Bloom
     ));
 }
