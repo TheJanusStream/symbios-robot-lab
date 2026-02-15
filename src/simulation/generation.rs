@@ -76,6 +76,23 @@ impl ParentPool {
         self.archive.len()
     }
 
+    /// Grid resolution (bins per dimension) for MAP-Elites.
+    pub fn archive_resolution(&self) -> usize {
+        self.archive_resolution
+    }
+
+    /// Returns `(cell_x, cell_y, fitness)` for each occupied archive cell.
+    pub fn archive_data(&self) -> Vec<(usize, usize, f32)> {
+        self.archive
+            .iter()
+            .filter_map(|(cell, &idx)| {
+                let x = *cell.first()?;
+                let y = *cell.get(1)?;
+                Some((x, y, self.pool[idx].fitness))
+            })
+            .collect()
+    }
+
     /// Returns `(objective_0, objective_1, rank)` for each individual in the pool.
     /// Individuals with non-finite objectives are excluded.
     pub fn objective_data(&self) -> Vec<(f32, f32, usize)> {
@@ -325,9 +342,8 @@ pub fn tick_generation(
         .map(|agent| {
             let (objectives, descriptor) =
                 if agent.num_motors > 4 && agent.displacement > f32::EPSILON {
-                    let walker_fitness = agent.displacement
-                        * agent.avg_up_alignment
-                        * (agent.avg_height + 0.5);
+                    let walker_fitness =
+                        agent.displacement * agent.avg_up_alignment * (agent.avg_height + 0.5);
                     let energy_efficiency = -(agent.energy_consumed / agent.displacement);
 
                     // MAP-Elites descriptor: normalised (up_alignment, avg_height)
@@ -337,10 +353,7 @@ pub fn tick_generation(
                     ];
                     (vec![walker_fitness, energy_efficiency], desc)
                 } else {
-                    (
-                        vec![f32::NEG_INFINITY, f32::NEG_INFINITY],
-                        vec![0.0, 0.0],
-                    )
+                    (vec![f32::NEG_INFINITY, f32::NEG_INFINITY], vec![0.0, 0.0])
                 };
             Phenotype {
                 genotype: agent.genotype.clone(),
@@ -373,6 +386,14 @@ pub fn tick_generation(
     telemetry.best_per_generation.push(best_fitness);
     telemetry.pareto_front_size = parent_pool.front_size();
 
+    let avg_fitness = if population.agents.is_empty() {
+        0.0
+    } else {
+        let sum: f32 = population.agents.iter().map(|a| a.fitness).sum();
+        sum / population.agents.len() as f32
+    };
+    telemetry.avg_per_generation.push(avg_fitness);
+
     // 3. Selection + crossover + mutation,
     //    with 10% fresh preset injection to maintain genetic diversity.
     let mut rng = Pcg64::from_rng(&mut rand::rng());
@@ -403,11 +424,16 @@ pub fn tick_generation(
         };
         // NEAT crossover assumes self (first arg) is the fitter parent.
         // Swap so the fitter parent calls crossover.
-        let (fitter, weaker) = if parent_pool.pool[idx1].fitness >= parent_pool.pool[idx2].fitness
-        {
-            (&parent_pool.pool[idx1].genotype, &parent_pool.pool[idx2].genotype)
+        let (fitter, weaker) = if parent_pool.pool[idx1].fitness >= parent_pool.pool[idx2].fitness {
+            (
+                &parent_pool.pool[idx1].genotype,
+                &parent_pool.pool[idx2].genotype,
+            )
         } else {
-            (&parent_pool.pool[idx2].genotype, &parent_pool.pool[idx1].genotype)
+            (
+                &parent_pool.pool[idx2].genotype,
+                &parent_pool.pool[idx1].genotype,
+            )
         };
 
         let mut child = fitter.crossover(weaker, &mut rng);

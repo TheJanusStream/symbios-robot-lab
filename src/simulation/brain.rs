@@ -186,8 +186,7 @@ pub fn gather_sensor_inputs(
     // Computes the signed angle around the hinge axis from the two body
     // rotations and their local joint frames, normalized to [-1, 1].
     for (agent_joint, joint) in &agent_joints {
-        let (Ok(rot1), Ok(rot2)) = (rotations.get(joint.body1), rotations.get(joint.body2))
-        else {
+        let (Ok(rot1), Ok(rot2)) = (rotations.get(joint.body1), rotations.get(joint.body2)) else {
             continue;
         };
         let basis1 = joint.local_basis1().unwrap_or(Quat::IDENTITY);

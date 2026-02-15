@@ -1,6 +1,8 @@
 use crate::core::population::Population;
 use crate::simulation::brain::{AgentImu, AgentJoint, AgentModule, AgentTouch, RobotBrain};
-use crate::simulation::brain::{INPUTS_PER_IMU, INPUTS_PER_JOINT, INPUTS_PER_TOUCH, NUM_CLOCK_INPUTS};
+use crate::simulation::brain::{
+    INPUTS_PER_IMU, INPUTS_PER_JOINT, INPUTS_PER_TOUCH, NUM_CLOCK_INPUTS,
+};
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::simulation::scoring::FitnessBaseline;
 use bevy::prelude::*;
@@ -68,10 +70,9 @@ pub fn spawn_agents(
         let z = row as f32 * spacing - offset;
         let spawn_rot = Quat::from_rotation_x(-std::f32::consts::PI);
         let aabb = blueprint.aabb(spawn_rot);
-        let spawn_y = (aabb.max.y-aabb.min.y)*0.5;
+        let spawn_y = (aabb.max.y - aabb.min.y) * 0.5;
         let spawn_pos = Vec3::new(x, spawn_y, z);
-        let spawn_transform = Transform::from_translation(spawn_pos)
-            .with_rotation(spawn_rot);
+        let spawn_transform = Transform::from_translation(spawn_pos).with_rotation(spawn_rot);
 
         let mut genome = agent.genotype.controller.clone();
         genome.break_cycles();

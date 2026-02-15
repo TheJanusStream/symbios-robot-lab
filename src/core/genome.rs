@@ -50,48 +50,66 @@ impl Genotype for AgentGenotype {
             let r = rate as f64;
 
             // Parametric: jitter #define constants and rule probability weights
-            system.mutate_with_rng(rng, &MutationConfig {
-                rule_probability_rate: r * 0.3,
-                rule_probability_strength: 0.15,
-                constant_rate: r * 0.5,
-                constant_strength: 0.2,
-                gaussian_jitter_scale: r * 0.3,
-                gaussian_jitter_rate: r * 0.5,
-            });
+            system.mutate_with_rng(
+                rng,
+                &MutationConfig {
+                    rule_probability_rate: r * 0.3,
+                    rule_probability_strength: 0.15,
+                    constant_rate: r * 0.5,
+                    constant_strength: 0.2,
+                    gaussian_jitter_scale: r * 0.3,
+                    gaussian_jitter_rate: r * 0.5,
+                },
+            );
 
             // Structural: insert/delete/swap modules in rule successors + bytecode
-            system.structural_mutate_with_rng(rng, &StructuralMutationConfig {
-                successor_rate: r * 0.1,
-                insert_rate: 0.15,
-                delete_rate: 0.05,
-                swap_rate: 0.1,
-                bytecode_rate: r * 0.1,
-                op_rate: 0.05,
-                push_perturbation: 0.3,
-            });
+            system.structural_mutate_with_rng(
+                rng,
+                &StructuralMutationConfig {
+                    successor_rate: r * 0.1,
+                    insert_rate: 0.15,
+                    delete_rate: 0.05,
+                    swap_rate: 0.1,
+                    bytecode_rate: r * 0.1,
+                    op_rate: 0.05,
+                    push_perturbation: 0.3,
+                },
+            );
 
             // Operator flip: swap Add<->Sub, Mul<->Div, Gt<->Lt, etc.
-            system.operator_flip_mutate_with_rng(rng, &OperatorFlipConfig {
-                arithmetic_flip_rate: r * 0.05,
-                relational_flip_rate: r * 0.05,
-            });
+            system.operator_flip_mutate_with_rng(
+                rng,
+                &OperatorFlipConfig {
+                    arithmetic_flip_rate: r * 0.05,
+                    relational_flip_rate: r * 0.05,
+                },
+            );
 
             // Rule duplication: clone rules with perturbed probabilities
-            system.rule_duplication_mutate_with_rng(rng, &RuleDuplicationConfig {
-                duplication_rate: r * 0.03,
-                condition_perturbation: 0.1,
-            });
+            system.rule_duplication_mutate_with_rng(
+                rng,
+                &RuleDuplicationConfig {
+                    duplication_rate: r * 0.03,
+                    condition_perturbation: 0.1,
+                },
+            );
 
             // Topological: swap spatial counterparts (+<->-, &<->^, \<->/)
-            system.topological_mutate_with_rng(rng, &TopologicalMutationConfig {
-                swap_rate: r * 0.05,
-            });
+            system.topological_mutate_with_rng(
+                rng,
+                &TopologicalMutationConfig {
+                    swap_rate: r * 0.05,
+                },
+            );
 
             // Literal promotion: replace Push literals with matching #define refs
-            system.literal_to_constant_promote_with_rng(rng, &LiteralPromotionConfig {
-                promotion_rate: r * 0.1,
-                match_tolerance: 0.5,
-            });
+            system.literal_to_constant_promote_with_rng(
+                rng,
+                &LiteralPromotionConfig {
+                    promotion_rate: r * 0.1,
+                    match_tolerance: 0.5,
+                },
+            );
 
             self.morphology = system.to_source();
         }
