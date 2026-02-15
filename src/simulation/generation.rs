@@ -143,6 +143,7 @@ impl ParentPool {
     /// Inserts evaluated agents, combines with existing pool, runs
     /// non-dominated sort + crowding distance, and truncates to `cap`.
     fn update_nsga2(&mut self, evaluated: Vec<Phenotype<AgentGenotype>>, cap: usize) {
+        self.archive.clear();
         let mut combined = std::mem::take(&mut self.pool);
         combined.extend(evaluated);
 
@@ -204,6 +205,7 @@ impl ParentPool {
     /// Inserts evaluated agents, combines with existing pool, sorts by scalar
     /// fitness (descending), and truncates to `cap` (elitism = entire retained pool).
     fn update_simple(&mut self, evaluated: Vec<Phenotype<AgentGenotype>>, cap: usize) {
+        self.archive.clear();
         let mut combined = std::mem::take(&mut self.pool);
         combined.extend(evaluated);
 
