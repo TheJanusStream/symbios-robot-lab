@@ -240,7 +240,10 @@ impl ParentPool {
         }
 
         for pheno in evaluated {
-            if pheno.fitness.is_nan() || pheno.descriptor.iter().any(|v| v.is_nan()) {
+            if pheno.fitness.is_nan()
+                || pheno.fitness.is_infinite()
+                || pheno.descriptor.iter().any(|v| v.is_nan())
+            {
                 continue;
             }
             let cell = self.descriptor_to_cell(&pheno.descriptor);
@@ -398,10 +401,16 @@ pub fn tick_generation(
                 parent_pool.select_from_archive(&mut rng),
             ),
         };
-        let p1 = &parent_pool.pool[idx1].genotype;
-        let p2 = &parent_pool.pool[idx2].genotype;
+        // NEAT crossover assumes self (first arg) is the fitter parent.
+        // Swap so the fitter parent calls crossover.
+        let (fitter, weaker) = if parent_pool.pool[idx1].fitness >= parent_pool.pool[idx2].fitness
+        {
+            (&parent_pool.pool[idx1].genotype, &parent_pool.pool[idx2].genotype)
+        } else {
+            (&parent_pool.pool[idx2].genotype, &parent_pool.pool[idx1].genotype)
+        };
 
-        let mut child = p1.crossover(p2, &mut rng);
+        let mut child = fitter.crossover(weaker, &mut rng);
         child.mutate(&mut rng, mutation_rate);
         child.generation = generation + 1;
         children.push(child);
