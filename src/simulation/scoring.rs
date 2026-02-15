@@ -73,9 +73,7 @@ pub fn check_explosion(
             }
         }
 
-        if exploded
-            && let Some(agent) = pop.agents.get_mut(check_index)
-        {
+        if exploded && let Some(agent) = pop.agents.get_mut(check_index) {
             agent.fitness = 0.0;
             if let Some(root) = agent.root_entity.take() {
                 commands.entity(root).try_despawn();
@@ -188,7 +186,7 @@ pub fn update_fitness_scores(
             0.0
         };
 
-        let fitness = horiz_displacement * avg_up;
+        let fitness = horiz_displacement * avg_up * (avg_height + 0.5);
 
         if let Some(agent) = pop.agents.get_mut(idx) {
             agent.fitness = if fitness.is_finite() { fitness } else { 0.0 };
