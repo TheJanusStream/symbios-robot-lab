@@ -1,4 +1,4 @@
-use crate::core::config::LabConfig;
+use crate::core::config::{GeneticAlgorithm, LabConfig};
 use crate::core::population::Population;
 use crate::simulation::generation::{GenerationTimer, ParentPool};
 use crate::simulation::lifecycle::SpawnRequest;
@@ -37,7 +37,35 @@ pub fn render_ui(
         return;
     };
     egui::Window::new("Symbios Lab Control").show(ctx, |ui| {
-        ui.heading("Experiment Control");
+        // Genetic algorithm selector
+        egui::ComboBox::from_label("Algorithm")
+            .selected_text(config.algorithm.label())
+            .show_ui(ui, |ui| {
+                for alg in GeneticAlgorithm::ALL {
+                    ui.selectable_value(&mut config.algorithm, alg, alg.label());
+                }
+            });
+        match config.algorithm {
+            GeneticAlgorithm::MapElites => {
+                ui.label(format!("Archive cells: {}", parent_pool.archive_size()));
+            }
+            _ => {}
+        }
+
+        ui.add(egui::Slider::new(&mut config.time_scale, 0.0..=10.0).text("Time Scale"));
+        ui.add(
+            egui::Slider::new(&mut config.generation_duration, 5.0..=60.0).text("Gen Duration (s)"),
+        );
+        ui.add(egui::Slider::new(&mut config.population_size, 2..=100).text("Population Size"));
+        ui.checkbox(&mut config.auto_restart, "Auto-advance generations");
+
+        if ui.button("Initialize Population").clicked() {
+            telemetry.best_all_time = 0.0;
+            telemetry.best_per_generation.clear();
+            telemetry.pareto_front_size = 0;
+            parent_pool.clear();
+            spawn_writer.write(SpawnRequest);
+        }
 
         ui.separator();
 
@@ -226,12 +254,18 @@ pub fn render_ui(
             for frac in [0.25, 0.5, 0.75] {
                 let y = plot_rect.max.y - frac * plot_rect.height();
                 painter.line_segment(
-                    [egui::pos2(plot_rect.min.x, y), egui::pos2(plot_rect.max.x, y)],
+                    [
+                        egui::pos2(plot_rect.min.x, y),
+                        egui::pos2(plot_rect.max.x, y),
+                    ],
                     egui::Stroke::new(0.5, egui::Color32::from_gray(45)),
                 );
                 let x = plot_rect.min.x + frac * plot_rect.width();
                 painter.line_segment(
-                    [egui::pos2(x, plot_rect.min.y), egui::pos2(x, plot_rect.max.y)],
+                    [
+                        egui::pos2(x, plot_rect.min.y),
+                        egui::pos2(x, plot_rect.max.y),
+                    ],
                     egui::Stroke::new(0.5, egui::Color32::from_gray(45)),
                 );
             }
@@ -248,7 +282,10 @@ pub fn render_ui(
             for window in front_points.windows(2) {
                 painter.line_segment(
                     [window[0], window[1]],
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(80, 200, 120, 100)),
+                    egui::Stroke::new(
+                        1.5,
+                        egui::Color32::from_rgba_premultiplied(80, 200, 120, 100),
+                    ),
                 );
             }
 
@@ -312,25 +349,6 @@ pub fn render_ui(
                     });
                 }
             }
-        }
-
-        ui.separator();
-
-        // Controls
-        ui.heading("Controls");
-        ui.add(egui::Slider::new(&mut config.time_scale, 0.0..=10.0).text("Time Scale"));
-        ui.add(
-            egui::Slider::new(&mut config.generation_duration, 5.0..=60.0).text("Gen Duration (s)"),
-        );
-        ui.add(egui::Slider::new(&mut config.population_size, 2..=100).text("Population Size"));
-        ui.checkbox(&mut config.auto_restart, "Auto-advance generations");
-
-        if ui.button("Initialize Population").clicked() {
-            telemetry.best_all_time = 0.0;
-            telemetry.best_per_generation.clear();
-            telemetry.pareto_front_size = 0;
-            parent_pool.clear();
-            spawn_writer.write(SpawnRequest);
         }
     });
 }

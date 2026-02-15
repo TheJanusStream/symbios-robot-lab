@@ -1,4 +1,4 @@
-use crate::core::config::LabConfig;
+use crate::core::config::{GeneticAlgorithm, LabConfig};
 use crate::core::genome::AgentGenotype;
 use crate::core::population::{Agent, Population};
 use crate::core::presets::MORPHOLOGY_POOL;
@@ -9,6 +9,7 @@ use bevy::tasks::ComputeTaskPool;
 use rand::Rng;
 use rand::prelude::SeedableRng;
 use rand_pcg::Pcg64;
+use std::collections::BTreeMap;
 use symbios_genetics::algorithms::nsga2::{Nsga2, SortWrapper};
 use symbios_genetics::{Genotype, Phenotype};
 use symbios_neat::NeatConfig;
@@ -30,15 +31,16 @@ impl Default for GenerationTimer {
     }
 }
 
-/// NSGA-II parent pool: ranked individuals from previous generations.
+/// Parent pool supporting multiple evolutionary algorithm strategies.
 ///
 /// Stores evaluated `Phenotype`s with two objectives:
 ///   - Objective 0: displacement * avg_up_alignment (walker fitness — maximize)
 ///   - Objective 1: -(energy / displacement) (energy efficiency — maximize, i.e. minimize energy per meter)
 ///
-/// At each generation boundary the current population is combined with the
-/// parent pool, non-dominated sorted, and truncated to `population_size`.
-/// Binary tournament selection from this pool produces the next generation.
+/// Three selection modes:
+///   - **NSGA-II**: non-dominated sort + crowding distance, binary tournament
+///   - **SimpleGA**: sort by scalar fitness, tournament(3) with elitism
+///   - **MAP-Elites**: behavioural-descriptor archive grid, random parent selection
 #[derive(Resource, Default)]
 pub struct ParentPool {
     /// Ranked phenotypes from previous generation(s).
@@ -47,6 +49,10 @@ pub struct ParentPool {
     ranks: Vec<usize>,
     /// Crowding distance per individual.
     crowding: Vec<f32>,
+    /// MAP-Elites archive: cell key → (phenotype index in `pool`).
+    archive: BTreeMap<Vec<usize>, usize>,
+    /// MAP-Elites resolution (bins per descriptor dimension).
+    archive_resolution: usize,
 }
 
 impl ParentPool {
@@ -63,6 +69,11 @@ impl ParentPool {
     /// Number of individuals on the Pareto front (rank 0).
     pub fn front_size(&self) -> usize {
         self.ranks.iter().filter(|&&r| r == 0).count()
+    }
+
+    /// Number of occupied cells in the MAP-Elites archive.
+    pub fn archive_size(&self) -> usize {
+        self.archive.len()
     }
 
     /// Returns `(objective_0, objective_1, rank)` for each individual in the pool.
@@ -88,11 +99,14 @@ impl ParentPool {
         self.pool.clear();
         self.ranks.clear();
         self.crowding.clear();
+        self.archive.clear();
     }
 
-    /// Binary tournament: pick two random individuals, return the better one.
-    /// Prefers lower rank; ties broken by higher crowding distance.
-    fn binary_tournament(&self, rng: &mut impl Rng) -> usize {
+    // ── NSGA-II ──────────────────────────────────────────────────────
+
+    /// Binary tournament (NSGA-II): pick two random individuals, return the
+    /// better one. Prefers lower rank; ties broken by higher crowding distance.
+    fn binary_tournament_nsga2(&self, rng: &mut impl Rng) -> usize {
         let n = self.pool.len();
         let i = rng.random_range(0..n);
         let j = rng.random_range(0..n);
@@ -111,7 +125,7 @@ impl ParentPool {
 
     /// Inserts evaluated agents, combines with existing pool, runs
     /// non-dominated sort + crowding distance, and truncates to `cap`.
-    fn update(&mut self, evaluated: Vec<Phenotype<AgentGenotype>>, cap: usize) {
+    fn update_nsga2(&mut self, evaluated: Vec<Phenotype<AgentGenotype>>, cap: usize) {
         let mut combined = std::mem::take(&mut self.pool);
         combined.extend(evaluated);
 
@@ -150,6 +164,111 @@ impl ParentPool {
             .map(|w| combined[w.index].clone())
             .collect();
     }
+
+    // ── SimpleGA ─────────────────────────────────────────────────────
+
+    /// Tournament selection (SimpleGA): pick 3 random individuals, return the
+    /// one with the highest scalar fitness.
+    fn tournament_simple(&self, rng: &mut impl Rng) -> usize {
+        let n = self.pool.len();
+        let tournament_size = 3.min(n);
+        let mut best = rng.random_range(0..n);
+        for _ in 1..tournament_size {
+            let candidate = rng.random_range(0..n);
+            if self.pool[candidate].fitness > self.pool[best].fitness
+                || self.pool[best].fitness.is_nan()
+            {
+                best = candidate;
+            }
+        }
+        best
+    }
+
+    /// Inserts evaluated agents, combines with existing pool, sorts by scalar
+    /// fitness (descending), and truncates to `cap` (elitism = entire retained pool).
+    fn update_simple(&mut self, evaluated: Vec<Phenotype<AgentGenotype>>, cap: usize) {
+        let mut combined = std::mem::take(&mut self.pool);
+        combined.extend(evaluated);
+
+        if combined.is_empty() {
+            return;
+        }
+
+        // Sort descending by fitness, NaN last
+        combined.sort_by(|a, b| {
+            match (a.fitness.is_nan(), b.fitness.is_nan()) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Greater, // NaN sorts after valid
+                (false, true) => std::cmp::Ordering::Less,
+                (false, false) => b.fitness.total_cmp(&a.fitness),
+            }
+        });
+        combined.truncate(cap);
+
+        // All individuals get rank 0 and infinite crowding (not used for selection)
+        self.ranks = vec![0; combined.len()];
+        self.crowding = vec![f32::INFINITY; combined.len()];
+        self.pool = combined;
+    }
+
+    // ── MAP-Elites ───────────────────────────────────────────────────
+
+    /// Maps a two-element descriptor to archive cell indices.
+    fn descriptor_to_cell(&self, descriptor: &[f32]) -> Vec<usize> {
+        descriptor
+            .iter()
+            .map(|&v| {
+                let scaled = v.clamp(0.0, 1.0) * self.archive_resolution as f32;
+                (scaled.floor() as usize).min(self.archive_resolution - 1)
+            })
+            .collect()
+    }
+
+    /// Select a random parent from the MAP-Elites archive.
+    fn select_from_archive(&self, rng: &mut impl Rng) -> usize {
+        let keys: Vec<&Vec<usize>> = self.archive.keys().collect();
+        let key = keys[rng.random_range(0..keys.len())];
+        self.archive[key]
+    }
+
+    /// Inserts evaluated agents into the MAP-Elites archive. Each agent's
+    /// descriptor is mapped to a grid cell; the cell keeps the fittest elite.
+    /// The pool is rebuilt from archive contents after insertion.
+    fn update_map_elites(&mut self, evaluated: Vec<Phenotype<AgentGenotype>>, _cap: usize) {
+        if self.archive_resolution == 0 {
+            self.archive_resolution = 20;
+        }
+
+        for pheno in evaluated {
+            if pheno.fitness.is_nan() || pheno.descriptor.iter().any(|v| v.is_nan()) {
+                continue;
+            }
+            let cell = self.descriptor_to_cell(&pheno.descriptor);
+            let dominated = self
+                .archive
+                .get(&cell)
+                .is_some_and(|&idx| pheno.fitness <= self.pool[idx].fitness);
+            if !dominated {
+                // Insert into pool and update archive index
+                let new_idx = self.pool.len();
+                self.pool.push(pheno);
+                self.archive.insert(cell, new_idx);
+            }
+        }
+
+        // Rebuild pool from archive to remove stale entries
+        let mut new_pool = Vec::with_capacity(self.archive.len());
+        let mut new_archive = BTreeMap::new();
+        for (cell, &old_idx) in &self.archive {
+            let new_idx = new_pool.len();
+            new_pool.push(self.pool[old_idx].clone());
+            new_archive.insert(cell.clone(), new_idx);
+        }
+        self.pool = new_pool;
+        self.archive = new_archive;
+        self.ranks = vec![0; self.pool.len()];
+        self.crowding = vec![f32::INFINITY; self.pool.len()];
+    }
 }
 
 /// Activates the generation timer when the population is first spawned.
@@ -169,8 +288,8 @@ pub fn activate_timer(
     }
 }
 
-/// NSGA-II end-of-generation: rank evaluated agents by [displacement, -modules],
-/// select parents via binary tournament, crossover + mutate to create offspring.
+/// End-of-generation: evaluate agents, select parents via the configured
+/// algorithm, crossover + mutate to create offspring.
 pub fn tick_generation(
     mut commands: Commands,
     time: Res<Time>,
@@ -191,6 +310,7 @@ pub fn tick_generation(
 
     // --- End of Generation ---
     let generation = population.generation;
+    let algorithm = config.algorithm;
 
     // 1. Convert evaluated agents to Phenotypes with walker fitness objectives:
     //    obj[0] = displacement * avg_up_alignment (walker fitness — maximize)
@@ -200,29 +320,48 @@ pub fn tick_generation(
         .agents
         .iter()
         .map(|agent| {
-            let objectives = if agent.num_motors > 4 && agent.displacement > f32::EPSILON {
-                let walker_fitness = agent.displacement * agent.avg_up_alignment * (agent.avg_height + 0.5); // Bonus for maintaining height
-                let energy_efficiency = -(agent.energy_consumed / agent.displacement);
-                vec![walker_fitness, energy_efficiency]
-            } else {
-                vec![f32::NEG_INFINITY, f32::NEG_INFINITY]
-            };
+            let (objectives, descriptor) =
+                if agent.num_motors > 4 && agent.displacement > f32::EPSILON {
+                    let walker_fitness = agent.displacement
+                        * agent.avg_up_alignment
+                        * (agent.avg_height + 0.5);
+                    let energy_efficiency = -(agent.energy_consumed / agent.displacement);
+
+                    // MAP-Elites descriptor: normalised (up_alignment, avg_height)
+                    let desc = vec![
+                        agent.avg_up_alignment.clamp(0.0, 1.0),
+                        agent.avg_height.clamp(0.0, 1.0),
+                    ];
+                    (vec![walker_fitness, energy_efficiency], desc)
+                } else {
+                    (
+                        vec![f32::NEG_INFINITY, f32::NEG_INFINITY],
+                        vec![0.0, 0.0],
+                    )
+                };
             Phenotype {
                 genotype: agent.genotype.clone(),
                 fitness: agent.fitness,
                 objectives,
-                descriptor: vec![],
+                descriptor,
             }
         })
         .collect();
 
-    // 2. Merge with parent pool and select top individuals via non-dominated sort
-    parent_pool.update(evaluated, config.population_size);
+    // 2. Merge with parent pool using the selected algorithm
+    match algorithm {
+        GeneticAlgorithm::Nsga2 => parent_pool.update_nsga2(evaluated, config.population_size),
+        GeneticAlgorithm::SimpleGA => parent_pool.update_simple(evaluated, config.population_size),
+        GeneticAlgorithm::MapElites => {
+            parent_pool.update_map_elites(evaluated, config.population_size)
+        }
+    }
 
     let best_fitness = parent_pool.best_fitness();
     info!(
-        "Generation {} complete. Pool: {} individuals, Pareto front: {}, best displacement: {:.2}",
+        "Generation {} complete ({:?}). Pool: {} individuals, Pareto front: {}, best: {:.2}",
         generation,
+        algorithm,
         parent_pool.len(),
         parent_pool.front_size(),
         best_fitness,
@@ -231,7 +370,7 @@ pub fn tick_generation(
     telemetry.best_per_generation.push(best_fitness);
     telemetry.pareto_front_size = parent_pool.front_size();
 
-    // 3. Binary tournament selection + crossover + mutation,
+    // 3. Selection + crossover + mutation,
     //    with 10% fresh preset injection to maintain genetic diversity.
     let mut rng = Pcg64::from_rng(&mut rand::rng());
     let mutation_rate = 0.3;
@@ -245,8 +384,20 @@ pub fn tick_generation(
         if parent_pool.len() < 2 {
             break;
         }
-        let idx1 = parent_pool.binary_tournament(&mut rng);
-        let idx2 = parent_pool.binary_tournament(&mut rng);
+        let (idx1, idx2) = match algorithm {
+            GeneticAlgorithm::Nsga2 => (
+                parent_pool.binary_tournament_nsga2(&mut rng),
+                parent_pool.binary_tournament_nsga2(&mut rng),
+            ),
+            GeneticAlgorithm::SimpleGA => (
+                parent_pool.tournament_simple(&mut rng),
+                parent_pool.tournament_simple(&mut rng),
+            ),
+            GeneticAlgorithm::MapElites => (
+                parent_pool.select_from_archive(&mut rng),
+                parent_pool.select_from_archive(&mut rng),
+            ),
+        };
         let p1 = &parent_pool.pool[idx1].genotype;
         let p2 = &parent_pool.pool[idx2].genotype;
 
