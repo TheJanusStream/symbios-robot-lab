@@ -14,8 +14,12 @@ pub const MORPHOLOGY_POOL: &[&str] = &[
     "\
 #define hip_min -0.57
 #define hip_max 0.57
-#define hip_eff 50000
+#define hip_eff 5000
 #define hip_vel 5
+#define hiph_min -0.57
+#define hiph_max 0.57
+#define hiph_eff 5000
+#define hiph_vel 5
 #define knee_min -0.57
 #define knee_max 0.57
 #define knee_eff 30000
@@ -25,7 +29,8 @@ pub const MORPHOLOGY_POOL: &[&str] = &[
 #define la 45
 #define lb 90
 #define ll 0.5
-omega: !(0.6) O Si !(0.2) [ &(lb)  C(ll) ^(la) L] [ \\(90) &(lb) C(ll) ^(la) L] [ \\(180) &(lb) C(ll) ^(la) L] [ /(90) &(lb) C(ll) ^(la) L]
+omega: !(0.6) O Si !(0.2) [ &(lb) M ^(la) L] [ \\(90) &(lb) M ^(la) L] [ \\(180) &(lb) M ^(la) L] [ /(90) &(lb) M ^(la) L]
+M -> /(90) Jl(hiph_min, hiph_max, hiph_eff, hiph_vel) J C(ll) \\(90)
 0.3 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) St
 0.4 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/2.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/2.0) St
 0.3 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) St",
@@ -34,7 +39,7 @@ omega: !(0.6) O Si !(0.2) [ &(lb)  C(ll) ^(la) L] [ \\(90) &(lb) C(ll) ^(la) L] 
     "\
 #define jmin -0.57
 #define jmax 0.57
-#define eff 40000
+#define eff 4000
 #define vel 5
 #define lw 0.12
 #define seg 1.0
@@ -51,7 +56,7 @@ omega: !(0.4) O Si L
     "\
 #define jmin -0.57
 #define jmax 0.57
-#define eff 40000
+#define eff 4000
 #define vel 5
 #define lw 0.12
 #define seg 1.0
@@ -68,7 +73,7 @@ omega: !(0.5) O Si [ &(la) C(ll) ^(lb) L ] [ \\(60) &(la) C(ll) ^(lb) L ] [ \\(1
     "\
 #define jmin -0.57
 #define jmax 0.57
-#define eff 30000
+#define eff 3000
 #define vel 8
 #define seg 0.35
 omega: !(0.3) O Si St L
@@ -79,11 +84,11 @@ L -> Jl(jmin, jmax, eff, vel) J K(seg) St A",
     "\
 #define hip_min -0.57
 #define hip_max 0.57
-#define eff 60000
+#define eff 6000
 #define vel 5
 #define knee_min -0.57
 #define knee_max 0.57
-#define keff 40000
+#define keff 4000
 #define kvel 5
 #define lw 0.18
 #define seg 0.6
@@ -94,7 +99,7 @@ L -> Jl(hip_min, hip_max, eff, vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, 
     "\
 #define jmin -0.57
 #define jmax 0.57
-#define eff 35000
+#define eff 3500
 #define vel 5
 #define seg 0.5
 #define la 60
