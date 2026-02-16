@@ -9,6 +9,29 @@
 ///   - Production rules define repeating structures (legs, segments)
 ///   - `Si` = IMU sensor, `St` = touch sensor, `Jl(...)` = limited hinge joint
 pub const MORPHOLOGY_POOL: &[&str] = &[
+    "\
+#define headradius 0.6
+#define bodylength 1.6
+#define bodyradius 0.4
+#define bodylengthfactor 1.0
+#define bodyradiusfactor 1.0
+#define hipangle 90
+#define hipanglefactor 1.0
+#define hip_min -0.57
+#define hip_max 0.57
+#define hip_eff 5000
+#define hip_vel 5
+#define leg_min -0.57
+#define leg_max 0.57
+#define leg_eff 5000
+#define leg_vel 5
+#define leglength 0.5
+#define legradius 0.3
+omega: O(headradius) Si +(90) LP(hipangle) Jl(hip_min, hip_max, hip_eff, hip_vel) J M(bodylength, bodyradius, hipangle*hipanglefactor)
+0.5 : M(bl, br, ha) -> K(bl, br) LP(ha * hipanglefactor) M(bl * bodylengthfactor, br * bodyradiusfactor, ha * hipanglefactor)
+0.5 : M(bl, br, ha) -> M(bl, br, ha)
+0.5 : LP(ha) -> LP(ha)
+0.5 : LP(ha) -> [ Jf  &(90) C(1.0) ^(90) -(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius)][ Jf  \\(180) &(90) C(1.0) ^(90) +(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius)]",
     // ── Quadruped ──────────────────────────────────────────────────────
     // 4 legs at 90° intervals, 1-3 DOF per leg.
     "\
@@ -106,4 +129,6 @@ L -> Jl(hip_min, hip_max, eff, vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, 
 omega: !(0.5) O Si [ &(la) L  St] [ \\(72) &(la) L  St] [ \\(144) &(la) L  St] [ /(144) &(la) L  St] [ /(72) &(la) L  St]
 0.1 : L -> Jl(jmin, jmax, eff, vel) J K(seg) L
 0.9 : L -> Jl(jmin, jmax, eff, vel) J K(seg)",
+
+ 
 ];
