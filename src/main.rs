@@ -45,7 +45,13 @@ fn main() {
             ),
         )
         // UI (egui pass)
-        .add_systems(EguiPrimaryContextPass, ui::lab_panel::render_ui)
+        .add_systems(
+            EguiPrimaryContextPass,
+            (
+                ui::lab_panel::render_ui,
+                ui::robot_inspector::render_robot_inspector,
+            ),
+        )
         // Update — ordered pipeline for population lifecycle and spawning.
         // Neural evaluation and scoring run in FixedUpdate (see below).
         .add_systems(
