@@ -5,11 +5,12 @@ use crate::simulation::generation::GenerationTimer;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-/// Baseline position for fitness measurement.
-/// Starts as `None`; set to the body's position after the settling period,
-/// so the initial fall doesn't dominate the fitness signal.
+/// Baseline position and forward direction for fitness measurement.
+/// Starts as `None`; set after the settling period so the initial fall
+/// doesn't dominate the fitness signal. Forward direction is captured at
+/// baseline time and displacement is projected onto it.
 #[derive(Component)]
-pub struct FitnessBaseline(pub Option<Vec3>);
+pub struct FitnessBaseline(pub Option<(Vec3, Vec3)>);
 
 /// Fraction of the generation timer that must elapse before fitness measurement begins.
 const SETTLING_FRACTION: f32 = 1.0 / 3.0;
@@ -167,11 +168,22 @@ pub fn update_fitness_scores(
         let idx = brain.agent_index;
         let body_pos = transform.translation;
 
-        // Snapshot baseline on first frame after settling
-        let base = *baseline.0.get_or_insert(body_pos);
+        // Snapshot baseline position + forward direction on first frame after settling.
+        // Forward is the body's local -Z projected onto the XZ plane (spawn rotation
+        // flips Y via Quat::from_rotation_x(-PI), so local -Z maps to world +Z).
+        let (base_pos, forward) = *baseline.0.get_or_insert_with(|| {
+            let fwd_raw = transform.rotation * Vec3::X;
+            let fwd_xz = Vec3::new(fwd_raw.x, 0.0, fwd_raw.z);
+            let forward = if fwd_xz.length_squared() > 1e-6 {
+                fwd_xz.normalize()
+            } else {
+                Vec3::X
+            };
+            (body_pos, forward)
+        });
 
-        let displacement = body_pos - base;
-        let horiz_displacement = Vec2::new(displacement.x, displacement.z).length();
+        let displacement = body_pos - base_pos;
+        let forward_displacement = displacement.dot(forward).max(0.0);
 
         // Walker fitness: displacement * average up-alignment
         let avg_up = if brain.metric_ticks > 0 {
@@ -186,12 +198,12 @@ pub fn update_fitness_scores(
             0.0
         };
 
-        let fitness = horiz_displacement * avg_up * (avg_height + 0.5);
+        let fitness = forward_displacement * avg_up * (avg_height + 0.5);
 
         if let Some(agent) = pop.agents.get_mut(idx) {
             agent.fitness = if fitness.is_finite() { fitness } else { 0.0 };
-            agent.displacement = if horiz_displacement.is_finite() {
-                horiz_displacement
+            agent.displacement = if forward_displacement.is_finite() {
+                forward_displacement
             } else {
                 0.0
             };
