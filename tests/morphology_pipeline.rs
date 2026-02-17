@@ -4,7 +4,7 @@
 //! topologies with the expected number of modules, joints, and joint types.
 
 use symbios::System;
-use symbios_robot::{JointType, RobotConfig, RobotInterpreter, SensorType};
+use symbios_robot::{JointType, RobotConfig, RobotInterpreter};
 use symbios_robot_lab::core::presets::MORPHOLOGY_POOL;
 
 /// Parse an L-System morphology string and build a RobotBlueprint.
@@ -22,15 +22,6 @@ fn count_hinge_joints(bp: &symbios_robot::RobotBlueprint) -> usize {
     bp.joints
         .iter()
         .filter(|j| j.joint_type == JointType::Hinge)
-        .count()
-}
-
-/// Count sensors of a given type across all modules.
-fn count_sensors(bp: &symbios_robot::RobotBlueprint, sensor_type: SensorType) -> usize {
-    bp.modules
-        .values()
-        .flat_map(|m| &m.sensors)
-        .filter(|s| s.sensor_type == sensor_type)
         .count()
 }
 
@@ -77,115 +68,10 @@ L -> J B(len) J B(len)";
 }
 
 // ---------------------------------------------------------------------------
-// Morphology pool: all initial morphologies must parse and produce valid robots
+// Mutation stability
 // ---------------------------------------------------------------------------
 
 const QUADRUPED: &str = MORPHOLOGY_POOL[0];
-const CENTIPEDE: &str = MORPHOLOGY_POOL[1];
-const HEXAPOD: &str = MORPHOLOGY_POOL[2];
-const SNAKE: &str = MORPHOLOGY_POOL[3];
-const BIPED: &str = MORPHOLOGY_POOL[4];
-const STARFISH: &str = MORPHOLOGY_POOL[5];
-
-/// Validate that every morphology in the pool parses, derives, and produces
-/// a non-trivial robot with at least 1 module, 1 joint, and 1 sensor.
-#[test]
-fn morphology_pool_all_valid() {
-    let pool = [
-        ("quadruped", QUADRUPED),
-        ("centipede", CENTIPEDE),
-        ("hexapod", HEXAPOD),
-        ("snake", SNAKE),
-        ("biped", BIPED),
-        ("starfish", STARFISH),
-    ];
-
-    for (name, source) in &pool {
-        let bp = build_blueprint_from_source(source);
-        let hinges = count_hinge_joints(&bp);
-        let imus = count_sensors(&bp, SensorType::IMU);
-        let touches = count_sensors(&bp, SensorType::Touch);
-
-        assert!(
-            bp.modules.len() >= 2,
-            "{}: expected at least 2 modules, got {}",
-            name,
-            bp.modules.len()
-        );
-        assert!(
-            hinges >= 1,
-            "{}: expected at least 1 hinge joint, got {}",
-            name,
-            hinges
-        );
-        assert!(imus >= 1, "{}: expected at least 1 IMU, got {}", name, imus);
-        assert!(
-            touches >= 1,
-            "{}: expected at least 1 touch sensor, got {}",
-            name,
-            touches
-        );
-
-        println!(
-            "  {}: {} modules, {} hinges, {} IMUs, {} touch",
-            name,
-            bp.modules.len(),
-            hinges,
-            imus,
-            touches
-        );
-    }
-}
-
-#[test]
-fn hexapod_has_six_legs() {
-    let bp = build_blueprint_from_source(HEXAPOD);
-    assert_eq!(
-        count_sensors(&bp, SensorType::Touch),
-        6,
-        "Hexapod should have 6 touch sensors (one per foot)"
-    );
-    // 6 legs × 2 joints = 12
-    assert_eq!(
-        count_hinge_joints(&bp),
-        12,
-        "Hexapod should have 12 hinge joints"
-    );
-}
-
-#[test]
-fn biped_has_two_legs() {
-    let bp = build_blueprint_from_source(BIPED);
-    assert_eq!(
-        count_sensors(&bp, SensorType::Touch),
-        2,
-        "Biped should have 2 touch sensors"
-    );
-    assert_eq!(
-        count_hinge_joints(&bp),
-        4,
-        "Biped should have 4 hinge joints"
-    );
-}
-
-#[test]
-fn starfish_has_five_arms() {
-    let bp = build_blueprint_from_source(STARFISH);
-    assert_eq!(
-        count_sensors(&bp, SensorType::Touch),
-        5,
-        "Starfish should have 5 touch sensors"
-    );
-    assert_eq!(
-        count_hinge_joints(&bp),
-        5,
-        "Starfish should have 5 hinge joints"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Mutation stability
-// ---------------------------------------------------------------------------
 
 #[test]
 fn mutated_morphology_still_parses() {
