@@ -20,6 +20,12 @@ pub struct AgentGenotype {
     /// Shared metrics
     pub generation: usize,
 
+    /// Seed for the L-System's internal RNG (affects stochastic rule selection).
+    pub lsystem_seed: u64,
+
+    /// Number of L-System derivation steps (controls morphological complexity).
+    pub lsystem_iterations: usize,
+
     /// Cached brain topology `(num_inputs, num_outputs)` derived from the
     /// morphology's L-System. Avoids re-parsing the L-System every time the
     /// counts are needed (e.g. at generation boundaries and spawn).
@@ -38,6 +44,8 @@ impl AgentGenotype {
             morphology,
             controller: NeatGenome::fully_connected(neat_config.clone(), rng),
             generation: 0,
+            lsystem_seed: rng.random(),
+            lsystem_iterations: 3,
             cached_topology: Some((neat_config.num_inputs, neat_config.num_outputs)),
         }
     }
@@ -114,7 +122,19 @@ impl Genotype for AgentGenotype {
             self.morphology = system.to_source();
         }
 
-        // 2. Mutate Brain
+        // 2. Mutate L-System seed (re-roll changes stochastic rule selection)
+        if rng.random_bool((rate * 0.2) as f64) {
+            self.lsystem_seed = rng.random();
+        }
+
+        // 3. Mutate L-System iteration count (±1, clamped to [1, 6])
+        if rng.random_bool((rate * 0.1) as f64) {
+            let delta: i32 = if rng.random_bool(0.5) { 1 } else { -1 };
+            self.lsystem_iterations =
+                (self.lsystem_iterations as i32 + delta).clamp(1, 6) as usize;
+        }
+
+        // 4. Mutate Brain
         self.controller.mutate(rng, rate);
     }
 
@@ -138,6 +158,16 @@ impl Genotype for AgentGenotype {
             morphology,
             controller: self.controller.crossover(&other.controller, rng),
             generation: self.generation.max(other.generation) + 1,
+            lsystem_seed: if rng.random_bool(0.5) {
+                self.lsystem_seed
+            } else {
+                other.lsystem_seed
+            },
+            lsystem_iterations: if rng.random_bool(0.5) {
+                self.lsystem_iterations
+            } else {
+                other.lsystem_iterations
+            },
             cached_topology: None,
         }
     }

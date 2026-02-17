@@ -447,7 +447,8 @@ pub fn tick_generation(
     // 3b. Fresh preset injection (10%) to keep the gene pool diverse
     for _ in 0..num_fresh {
         let morphology = MORPHOLOGY_POOL[rng.random_range(0..MORPHOLOGY_POOL.len())];
-        if let Some((_, ni, no)) = derive_blueprint(morphology) {
+        let fresh_seed: u64 = rng.random();
+        if let Some((_, ni, no)) = derive_blueprint(morphology, fresh_seed, 3) {
             let cfg = NeatConfig {
                 num_inputs: ni,
                 num_outputs: no,
@@ -465,7 +466,9 @@ pub fn tick_generation(
     let blueprints: Vec<Option<(RobotBlueprint, usize, usize)>> = pool.scope(|s| {
         for child in &children {
             let morphology = &child.morphology;
-            s.spawn(async move { derive_blueprint(morphology) });
+            let seed = child.lsystem_seed;
+            let iterations = child.lsystem_iterations;
+            s.spawn(async move { derive_blueprint(morphology, seed, iterations) });
         }
     });
 

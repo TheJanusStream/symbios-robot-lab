@@ -4,7 +4,7 @@ use crate::core::population::{Agent, Population};
 use crate::core::presets::MORPHOLOGY_POOL;
 use crate::simulation::brain::compute_num_inputs;
 use bevy::prelude::*;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use symbios::System;
 use symbios_neat::NeatConfig;
@@ -14,9 +14,14 @@ use symbios_robot::{JointType, RobotBlueprint, RobotConfig, RobotInterpreter, Se
 ///
 /// Returns the blueprint along with brain topology `(num_inputs, num_outputs)`,
 /// or `None` if the morphology fails to parse.
-pub fn derive_blueprint(morphology: &str) -> Option<(RobotBlueprint, usize, usize)> {
+pub fn derive_blueprint(
+    morphology: &str,
+    seed: u64,
+    iterations: usize,
+) -> Option<(RobotBlueprint, usize, usize)> {
     let mut sys = System::from_source(morphology).ok()?;
-    sys.derive(3).ok()?;
+    sys.set_seed(seed);
+    sys.derive(iterations).ok()?;
 
     let mut interpreter = RobotInterpreter::new(RobotConfig::default());
     interpreter.populate_standard_symbols(&sys.interner);
@@ -73,7 +78,8 @@ pub fn manage_generations(
             .map(|_| {
                 let morphology = MORPHOLOGY_POOL[rand::random_range(0..MORPHOLOGY_POOL.len())];
 
-                let derived = derive_blueprint(morphology);
+                let seed: u64 = rng.random();
+                let derived = derive_blueprint(morphology, seed, 3);
                 let (blueprint, num_inputs, num_outputs) = match derived {
                     Some((bp, ni, no)) => (Some(bp), ni, no),
                     None => {

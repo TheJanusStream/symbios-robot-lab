@@ -46,7 +46,11 @@ pub fn spawn_agents(
         // Use cached blueprint or derive fresh from L-System morphology.
         let blueprint = match agent.cached_blueprint.take() {
             Some(bp) => bp,
-            None => match derive_blueprint(&agent.genotype.morphology) {
+            None => match derive_blueprint(
+                &agent.genotype.morphology,
+                agent.genotype.lsystem_seed,
+                agent.genotype.lsystem_iterations,
+            ) {
                 Some((bp, _, _)) => bp,
                 None => {
                     warn!("Agent {}: failed to parse morphology", i);
