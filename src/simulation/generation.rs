@@ -346,7 +346,7 @@ pub fn tick_generation(
                 if agent.num_motors > 4 && agent.displacement > f32::EPSILON {
                     let walker_fitness =
                         agent.displacement * agent.avg_up_alignment * (agent.avg_height + 0.5);
-                    let energy_efficiency = -(agent.energy_consumed / agent.displacement);
+                    let energy_efficiency = -(agent.energy_consumed / agent.displacement.max(1.0));
 
                     // MAP-Elites descriptor: normalised (up_alignment, avg_height)
                     let desc = vec![
@@ -355,7 +355,7 @@ pub fn tick_generation(
                     ];
                     (vec![walker_fitness, energy_efficiency], desc)
                 } else {
-                    (vec![f32::NEG_INFINITY, f32::NEG_INFINITY], vec![0.0, 0.0])
+                    (vec![f32::MIN, f32::MIN], vec![0.0, 0.0])
                 };
             Phenotype {
                 genotype: agent.genotype.clone(),

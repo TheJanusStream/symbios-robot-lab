@@ -106,7 +106,7 @@ pub fn compute_num_inputs(num_imus: usize, num_touches: usize, num_hinges: usize
 const MAX_MOTOR_VELOCITY: f32 = 3.0;
 
 /// Maximum torque (N·m) each motor can apply.
-pub const MAX_MOTOR_TORQUE: f32 = 10000.0;
+pub const MAX_MOTOR_TORQUE: f32 = 5000.0;
 
 /// Evaluate brains every Nth fixed step. Motors hold their last commanded
 /// velocity between evaluations. This halves NEAT CPU cost while

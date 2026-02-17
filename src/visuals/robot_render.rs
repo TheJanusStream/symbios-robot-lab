@@ -35,7 +35,7 @@ pub fn spawn_agents(
 
     let pop_size = population.agents.len();
     let cols = (pop_size as f32).sqrt().ceil() as usize;
-    let spacing = 5.0;
+    let spacing = 10.0;
     let offset = (cols as f32 * spacing) / 2.0;
 
     for (i, agent) in population.agents.iter_mut().enumerate() {
@@ -75,10 +75,8 @@ pub fn spawn_agents(
         let z = row as f32 * spacing - offset;
         let spawn_rot = Quat::from_rotation_x(-std::f32::consts::PI);
         let aabb = blueprint.aabb(spawn_rot);
-        let spawn_y = (aabb.max.y - aabb.min.y) * 0.5;
+        let spawn_y = -aabb.min.y;
         let spawn_pos = Vec3::new(x, spawn_y, z);
-        let spawn_transform = Transform::from_translation(spawn_pos).with_rotation(spawn_rot);
-
         let mut genome = agent.genotype.controller.clone();
         genome.break_cycles();
         let evaluator = CppnEvaluator::new(&genome);
@@ -92,13 +90,15 @@ pub fn spawn_agents(
             ))
             .id();
 
-        // Spawn physics hierarchy
+        // Spawn physics hierarchy with rotation only — translation is handled
+        // by the root entity. Using the full spawn_transform here would double
+        // the translation since Bevy child transforms are relative to the parent.
         let spawned = spawn_robot(
             &mut commands,
             &blueprint,
             &palette,
             &mut meshes,
-            spawn_transform,
+            Transform::from_rotation(spawn_rot),
         );
 
         // Tag all modules with AgentModule for explosion detection

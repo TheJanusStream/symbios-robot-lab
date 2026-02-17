@@ -9,7 +9,7 @@
 ///
 /// Key Improvements (v2):
 ///   - Capsules (K) everywhere to prevent physics snagging.
-///   - High Torque (4000+) to lift body weight.
+///   - High Torque (400+) to lift body weight.
 ///   - Tighter joint limits (+/- 0.6) to prevent self-collision folding.
 ///   - Alternating Axes (Pitch/Yaw) for snake/worm topologies.
 pub const MORPHOLOGY_POOL: &[&str] = &[
@@ -41,18 +41,18 @@ omega: O(headradius) Si +(90) LP(hipangle) Jl(hip_min, hip_max, hip_eff, hip_vel
 p1 : M(bl, br, ha) -> K(bl, br) LP(ha * hipanglefactor) M(bl * bodylengthfactor, br * bodyradiusfactor, ha * hipanglefactor)
 p2 : M(bl, br, ha) -> M(bl, br, ha)
 p3 : LP(ha) -> LP(ha)
-p4 : LP(ha) -> [ Jf  &(90) C(1.0) ^(90) -(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St][ Jf  \\(180) &(90) C(1.0) ^(90) +(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St]",
+p4 : LP(ha) -> [ Jf  &(90) C(1.0) ^(90) -(90) /(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St][ Jf  \\(180) &(90) C(1.0) ^(90) +(90) /(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St]",
 
     // ── Quadruped (Upgraded) ───────────────────────────────────────────
     // 4 legs. Upgraded to Capsules (K) and higher torque.
     "\
 #define hip_min -0.6
 #define hip_max 0.6
-#define hip_eff 5000
+#define hip_eff 2000
 #define hip_vel 5
 #define knee_min -0.8
 #define knee_max 0.8
-#define knee_eff 5000
+#define knee_eff 2000
 #define knee_vel 5
 #define lw 0.2
 #define seg 1.2
@@ -69,7 +69,7 @@ M -> /(90) Jl(hip_min, hip_max, hip_eff, hip_vel) J C(0.5) \\(90)
     "\
 #define jmin -0.6
 #define jmax 0.6
-#define eff 4000
+#define eff 2000
 #define vel 6
 #define lw 0.15
 #define seg 1.0
@@ -85,7 +85,7 @@ omega: !(0.6) O Si [ &(spread) L ] [ \\(60) &(spread) L ] [ \\(120) &(spread) L 
     "\
 #define jmin -0.8
 #define jmax 0.8
-#define eff 4000
+#define eff 2000
 #define vel 8
 #define seg 0.5
 #define rad 0.35
@@ -97,15 +97,15 @@ Ribs -> [ Jf +(90) K(0.2, 0.1) ] [ Jf -(90) K(0.2, 0.1) ]",
 
     // ── Biped (Snowshoe) ───────────────────────────────────────────────
     // IMPROVEMENT: Massive feet (Foot) to lower the balance difficulty.
-    // High torque (6000) to lift the heavy upper body.
+    // High torque (600) to lift the heavy upper body.
     "\
 #define hip_min -0.8
 #define hip_max 0.8
-#define eff 6000
+#define eff 2000
 #define vel 4
 #define knee_min -1.0
 #define knee_max 0.2
-#define keff 6000
+#define keff 2000
 #define kvel 4
 #define lw 0.25
 #define seg 0.7
@@ -120,7 +120,7 @@ Foot -> Jf !(0.1) [ +(90) K(0.6) ] [ -(90) K(0.6) ] St",
     "\
 #define jmin -0.7
 #define jmax 0.7
-#define eff 4000
+#define eff 2000
 #define vel 5
 #define seg 0.6
 omega: !(0.8) O Si [ &(90) Arm ] [ \\(72) &(90) Arm ] [ \\(144) &(90) Arm ] [ /(144) &(90) Arm ] [ /(72) &(90) Arm ]
