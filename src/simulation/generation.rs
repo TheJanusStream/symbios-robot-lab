@@ -484,13 +484,7 @@ pub fn tick_generation(
             cached_blueprint = Some(bp);
 
             if ni != child.controller.input_ids.len() || no != child.controller.output_ids.len() {
-                let cfg = NeatConfig {
-                    num_inputs: ni,
-                    num_outputs: no,
-                    output_activation: symbios_neat::Activation::Tanh,
-                    ..NeatConfig::default()
-                };
-                child.controller = symbios_neat::NeatGenome::fully_connected(cfg, &mut rng);
+                child.controller.resize_io(ni, no, &mut rng);
             }
         } else {
             child.cached_topology = None;

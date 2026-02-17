@@ -33,58 +33,53 @@ const MAX_Y: f32 = 10.0;
 /// Only recalculate displacement fitness every N fixed steps.
 const FITNESS_CALC_INTERVAL: u32 = 4;
 
-/// Checks a single robot for physics explosion each fixed step, cycling
-/// through the population round-robin. Runs from the first frame (no
-/// settling gate) so unstable robots are culled before wasting sensor
-/// gathering and brain evaluation work.
+/// Checks all robots for physics explosion each fixed step. Runs from the
+/// first frame (no settling gate) so unstable robots are culled before
+/// NaN/Inf values propagate through the physics solver.
 pub fn check_explosion(
     mut commands: Commands,
     brains: Query<(&RobotBrain, &Transform)>,
     modules: Query<(&Transform, &LinearVelocity), Without<RobotBrain>>,
     mut population: ResMut<Population>,
-    mut cursor: Local<usize>,
 ) {
     let pop = population.bypass_change_detection();
-    let pop_size = pop.agents.len();
-    if pop_size == 0 {
+    if pop.agents.is_empty() {
         return;
     }
 
-    let check_index = *cursor % pop_size;
-    *cursor = cursor.wrapping_add(1);
+    for (idx, agent) in pop.agents.iter_mut().enumerate() {
+        let body_entity = match agent.body_entity {
+            Some(e) => e,
+            None => continue,
+        };
 
-    // O(1) lookup: get the body entity (which holds the RobotBrain) directly
-    // from the population, instead of scanning all brains.
-    let body_entity = match pop.agents.get(check_index).and_then(|a| a.body_entity) {
-        Some(e) => e,
-        None => return,
-    };
+        let Ok((brain, transform)) = brains.get(body_entity) else {
+            continue;
+        };
 
-    let Ok((brain, transform)) = brains.get(body_entity) else {
-        return;
-    };
+        let body_pos = transform.translation;
+        let mut exploded = !body_pos.is_finite() || body_pos.y < MIN_Y || body_pos.y > MAX_Y;
 
-    let body_pos = transform.translation;
-    let mut exploded = !body_pos.is_finite() || body_pos.y < MIN_Y || body_pos.y > MAX_Y;
+        if !exploded {
+            for &module_entity in &brain.module_entities {
+                if let Ok((tf, vel)) = modules.get(module_entity)
+                    && (!tf.translation.is_finite()
+                        || vel.length_squared() > MAX_MODULE_SPEED_SQ
+                        || tf.translation.distance_squared(body_pos) > EXPLOSION_RADIUS_SQ)
+                {
+                    exploded = true;
+                    break;
+                }
+            }
+        }
 
-    for &module_entity in &brain.module_entities {
         if exploded {
-            break;
-        }
-        if let Ok((tf, vel)) = modules.get(module_entity)
-            && (!tf.translation.is_finite()
-                || vel.length_squared() > MAX_MODULE_SPEED_SQ
-                || tf.translation.distance_squared(body_pos) > EXPLOSION_RADIUS_SQ)
-        {
-            exploded = true;
-        }
-    }
-
-    if exploded && let Some(agent) = pop.agents.get_mut(check_index) {
-        agent.fitness = 0.0;
-        agent.body_entity = None;
-        if let Some(root) = agent.root_entity.take() {
-            commands.entity(root).try_despawn();
+            agent.fitness = 0.0;
+            agent.body_entity = None;
+            if let Some(root) = agent.root_entity.take() {
+                commands.entity(root).try_despawn();
+            }
+            info!("Agent {} exploded, despawning", idx);
         }
     }
 }
