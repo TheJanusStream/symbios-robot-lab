@@ -27,11 +27,15 @@ pub const MORPHOLOGY_POOL: &[&str] = &[
 #define leg_vel 5
 #define leglength 0.5
 #define legradius 0.3
+#define p1 0.5
+#define p2 0.5
+#define p3 0.5
+#define p4 0.5
 omega: O(headradius) Si +(90) LP(hipangle) Jl(hip_min, hip_max, hip_eff, hip_vel) J M(bodylength, bodyradius, hipangle*hipanglefactor)
-0.5 : M(bl, br, ha) -> K(bl, br) LP(ha * hipanglefactor) M(bl * bodylengthfactor, br * bodyradiusfactor, ha * hipanglefactor)
-0.5 : M(bl, br, ha) -> M(bl, br, ha)
-0.5 : LP(ha) -> LP(ha)
-0.5 : LP(ha) -> [ Jf  &(90) C(1.0) ^(90) -(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St][ Jf  \\(180) &(90) C(1.0) ^(90) +(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St]",
+p1 : M(bl, br, ha) -> K(bl, br) LP(ha * hipanglefactor) M(bl * bodylengthfactor, br * bodyradiusfactor, ha * hipanglefactor)
+p2 : M(bl, br, ha) -> M(bl, br, ha)
+p3 : LP(ha) -> LP(ha)
+p4 : LP(ha) -> [ Jf  &(90) C(1.0) ^(90) -(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St][ Jf  \\(180) &(90) C(1.0) ^(90) +(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St]",
     // ── Quadruped ──────────────────────────────────────────────────────
     // 4 legs at 90° intervals, 1-3 DOF per leg.
     "\

@@ -5,6 +5,7 @@ use crate::simulation::brain::{
 };
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::simulation::scoring::FitnessBaseline;
+use avian3d::prelude::CollidingEntities;
 use bevy::prelude::*;
 use bevy_symbios::materials::{MaterialPalette, setup_material_assets};
 use bevy_symbios::robot::spawn_robot;
@@ -139,10 +140,13 @@ pub fn spawn_agents(
                 }
                 SensorType::Touch => {
                     let input_offset = NUM_CLOCK_INPUTS + num_imus * INPUTS_PER_IMU + touch_index;
-                    commands.entity(sensor_entity).insert(AgentTouch {
-                        brain_entity: body_entity,
-                        input_offset,
-                    });
+                    commands.entity(sensor_entity).insert((
+                        AgentTouch {
+                            brain_entity: body_entity,
+                            input_offset,
+                        },
+                        CollidingEntities::default(),
+                    ));
                     touch_index += 1;
                 }
                 _ => {}
