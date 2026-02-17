@@ -100,6 +100,7 @@ pub fn manage_generations(
                     fitness: 0.0,
                     num_motors: num_outputs,
                     root_entity: None,
+                    body_entity: None,
                     cached_blueprint: blueprint,
                     energy_consumed: 0.0,
                     displacement: 0.0,

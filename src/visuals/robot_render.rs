@@ -194,6 +194,7 @@ pub fn spawn_agents(
         ));
 
         agent.root_entity = Some(root);
+        agent.body_entity = Some(body_entity);
     }
 }
 

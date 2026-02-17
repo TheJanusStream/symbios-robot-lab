@@ -53,34 +53,39 @@ pub fn check_explosion(
     let check_index = *cursor % pop_size;
     *cursor = cursor.wrapping_add(1);
 
-    for (brain, transform) in &brains {
-        if brain.agent_index != check_index {
-            continue;
-        }
+    // O(1) lookup: get the body entity (which holds the RobotBrain) directly
+    // from the population, instead of scanning all brains.
+    let body_entity = match pop.agents.get(check_index).and_then(|a| a.body_entity) {
+        Some(e) => e,
+        None => return,
+    };
 
-        let body_pos = transform.translation;
-        let mut exploded = !body_pos.is_finite() || body_pos.y < MIN_Y || body_pos.y > MAX_Y;
+    let Ok((brain, transform)) = brains.get(body_entity) else {
+        return;
+    };
 
-        for &module_entity in &brain.module_entities {
-            if exploded {
-                break;
-            }
-            if let Ok((tf, vel)) = modules.get(module_entity)
-                && (!tf.translation.is_finite()
-                    || vel.length_squared() > MAX_MODULE_SPEED_SQ
-                    || tf.translation.distance_squared(body_pos) > EXPLOSION_RADIUS_SQ)
-            {
-                exploded = true;
-            }
-        }
+    let body_pos = transform.translation;
+    let mut exploded = !body_pos.is_finite() || body_pos.y < MIN_Y || body_pos.y > MAX_Y;
 
-        if exploded && let Some(agent) = pop.agents.get_mut(check_index) {
-            agent.fitness = 0.0;
-            if let Some(root) = agent.root_entity.take() {
-                commands.entity(root).try_despawn();
-            }
+    for &module_entity in &brain.module_entities {
+        if exploded {
+            break;
         }
-        break;
+        if let Ok((tf, vel)) = modules.get(module_entity)
+            && (!tf.translation.is_finite()
+                || vel.length_squared() > MAX_MODULE_SPEED_SQ
+                || tf.translation.distance_squared(body_pos) > EXPLOSION_RADIUS_SQ)
+        {
+            exploded = true;
+        }
+    }
+
+    if exploded && let Some(agent) = pop.agents.get_mut(check_index) {
+        agent.fitness = 0.0;
+        agent.body_entity = None;
+        if let Some(root) = agent.root_entity.take() {
+            commands.entity(root).try_despawn();
+        }
     }
 }
 

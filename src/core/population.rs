@@ -10,6 +10,9 @@ pub struct Agent {
     pub num_motors: usize,
     /// The root entity of the spawned robot in the Bevy world
     pub root_entity: Option<Entity>,
+    /// The body entity holding the `RobotBrain` component (first module).
+    /// Used for O(1) brain lookup in systems like `check_explosion`.
+    pub body_entity: Option<Entity>,
     /// Cached blueprint from L-System derivation, avoids re-parsing at spawn.
     pub cached_blueprint: Option<RobotBlueprint>,
     /// Cumulative energy consumed during the evaluation period.
@@ -56,6 +59,7 @@ mod tests {
             fitness: 0.0,
             num_motors: 0,
             root_entity: None,
+            body_entity: None,
             cached_blueprint: None,
             energy_consumed: 0.0,
             displacement: 0.0,

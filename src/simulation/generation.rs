@@ -503,6 +503,7 @@ pub fn tick_generation(
             fitness: 0.0,
             num_motors,
             root_entity: None,
+            body_entity: None,
             cached_blueprint,
             energy_consumed: 0.0,
             displacement: 0.0,
