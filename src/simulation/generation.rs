@@ -399,7 +399,7 @@ pub fn tick_generation(
     // 3. Selection + crossover + mutation,
     //    with 10% fresh preset injection to maintain genetic diversity.
     let mut rng = Pcg64::from_rng(&mut rand::rng());
-    let mutation_rate = 0.3;
+    let mutation_rate = config.mutation_rate;
     let num_fresh = config.population_size / 10;
     let num_evolved = config.population_size - num_fresh;
 

@@ -52,6 +52,7 @@ pub fn render_ui(
             egui::Slider::new(&mut config.generation_duration, 5.0..=60.0).text("Gen Duration (s)"),
         );
         ui.add(egui::Slider::new(&mut config.population_size, 2..=100).text("Population Size"));
+        ui.add(egui::Slider::new(&mut config.mutation_rate, 0.0..=1.0).text("Mutation Rate"));
         ui.checkbox(&mut config.auto_restart, "Auto-advance generations");
 
         if ui.button("Initialize Population").clicked() {

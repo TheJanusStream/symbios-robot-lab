@@ -41,6 +41,7 @@ pub struct LabConfig {
     pub time_scale: f32,
     pub auto_restart: bool,
     pub algorithm: GeneticAlgorithm,
+    pub mutation_rate: f32,
 }
 
 impl Default for LabConfig {
@@ -51,6 +52,7 @@ impl Default for LabConfig {
             time_scale: 5.0,
             auto_restart: true,
             algorithm: GeneticAlgorithm::default(),
+            mutation_rate: 0.3,
         }
     }
 }
