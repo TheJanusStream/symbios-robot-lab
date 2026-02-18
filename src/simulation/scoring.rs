@@ -90,7 +90,7 @@ pub fn check_explosion(
 ///
 /// Runs in `FixedUpdate` after `drive_motors`, before `update_fitness_scores`.
 pub fn track_metrics(
-    mut brains: Query<(&mut RobotBrain, &Transform)>,
+    mut brains: Query<(&mut RobotBrain, &GlobalTransform)>,
     joints: Query<&RevoluteJoint>,
     gen_timer: Res<GenerationTimer>,
     config: Res<LabConfig>,
@@ -115,9 +115,10 @@ pub fn track_metrics(
         brain.energy_consumed += tick_energy;
 
         // Posture: dot product of local up with world up
-        let local_up = transform.rotation * Vec3::NEG_Y;
+        let (_, rot, translation) = transform.to_scale_rotation_translation();
+        let local_up = rot * Vec3::NEG_Y;
         brain.up_alignment_sum += local_up.dot(Vec3::Y);
-        brain.height_sum += transform.translation.y;
+        brain.height_sum += translation.y;
         brain.metric_ticks += 1;
     }
 }
@@ -193,7 +194,7 @@ pub fn update_fitness_scores(
         };
 
         let avg_height = if brain.metric_ticks > 0 {
-            (brain.height_sum / brain.metric_ticks as f32).clamp(0.0, 1.0)
+            (brain.height_sum / brain.metric_ticks as f32).max(0.0)
         } else {
             0.0
         };

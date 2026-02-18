@@ -344,14 +344,18 @@ pub fn tick_generation(
         .map(|agent| {
             let (objectives, descriptor) =
                 if agent.num_motors > 4 && agent.displacement > f32::EPSILON {
-                    let walker_fitness =
-                        agent.displacement * agent.avg_up_alignment * (agent.avg_height + 0.5);
+                    let walker_fitness = agent.displacement
+                        * agent.avg_up_alignment
+                        * (agent.avg_height.min(1.0) + 0.5);
                     let energy_efficiency = -(agent.energy_consumed / agent.displacement.max(1.0));
 
                     // MAP-Elites descriptor: normalised (up_alignment, avg_height)
+                    // Height is normalised over [0, 3] to spread the grid across
+                    // realistic robot body heights instead of clamping to [0, 1].
+                    const MAX_DESCRIPTOR_HEIGHT: f32 = 3.0;
                     let desc = vec![
                         agent.avg_up_alignment.clamp(0.0, 1.0),
-                        agent.avg_height.clamp(0.0, 1.0),
+                        (agent.avg_height / MAX_DESCRIPTOR_HEIGHT).clamp(0.0, 1.0),
                     ];
                     (vec![walker_fitness, energy_efficiency], desc)
                 } else {
