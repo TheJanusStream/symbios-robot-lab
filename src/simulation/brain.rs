@@ -28,7 +28,7 @@ pub struct RobotBrain {
     pub scratchpad: EvalScratchpad,
     pub agent_index: usize,
     /// Pre-allocated input buffer filled by `gather_sensor_inputs`.
-    /// Layout: [sin(t), cos(t), imu0..., imu1..., touch0, touch1, ...]
+    /// Layout: [sin(t), cos(t), imu0..., imu1..., touch0, touch1, ..., joint0_angle, ...]
     pub sensor_inputs: Vec<f32>,
     /// Hinge joint entities, ordered by joint_index (matches NEAT output order).
     pub joint_entities: Vec<Entity>,

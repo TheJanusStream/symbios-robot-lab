@@ -49,9 +49,12 @@ pub fn derive_blueprint(
     Some((blueprint, num_inputs, num_outputs))
 }
 
+/// One-shot message that triggers Generation 0 initialization.
 #[derive(Message)]
 pub struct SpawnRequest;
 
+/// Handles the `SpawnRequest` message: despawns any existing robots, resets the
+/// timer, and creates a fresh Generation 0 population from random presets.
 pub fn manage_generations(
     mut commands: Commands,
     mut population: ResMut<Population>,

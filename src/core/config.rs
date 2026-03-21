@@ -34,6 +34,7 @@ impl std::fmt::Display for GeneticAlgorithm {
     }
 }
 
+/// User-facing simulation parameters exposed via the UI panel.
 #[derive(Resource)]
 pub struct LabConfig {
     pub population_size: usize,

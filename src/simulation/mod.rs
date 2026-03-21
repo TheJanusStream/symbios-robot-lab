@@ -1,3 +1,5 @@
+//! Simulation loop: arena setup, physics, neural evaluation, scoring, and generational lifecycle.
+
 pub mod arena;
 pub mod brain;
 pub mod collision;

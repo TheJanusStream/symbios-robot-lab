@@ -2,6 +2,8 @@ use crate::core::genome::AgentGenotype;
 use bevy::prelude::*;
 use symbios_robot::RobotBlueprint;
 
+/// A single individual in the population: genotype, cached phenotype data, and
+/// per-generation fitness metrics populated by the scoring systems.
 #[derive(Clone)]
 pub struct Agent {
     pub genotype: AgentGenotype,
@@ -21,10 +23,11 @@ pub struct Agent {
     pub displacement: f32,
     /// Average root up-alignment during evaluation (0..1).
     pub avg_up_alignment: f32,
-    /// Average height during evaluation (0..1).
+    /// Average height during evaluation (metres, unbounded above 0).
     pub avg_height: f32,
 }
 
+/// The current generation of agents being evaluated in the simulation.
 #[derive(Resource, Default)]
 pub struct Population {
     pub agents: Vec<Agent>,

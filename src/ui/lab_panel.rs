@@ -16,6 +16,9 @@ pub struct Telemetry {
     pub avg_per_generation: Vec<f32>,
 }
 
+/// Renders the main "Symbios Lab Control" egui window with algorithm selection,
+/// parameter sliders, generation status, fitness telemetry, and algorithm-specific
+/// visualisations (Pareto scatter, MAP-Elites heatmap, average fitness graph).
 pub fn render_ui(
     mut contexts: EguiContexts,
     mut config: ResMut<LabConfig>,

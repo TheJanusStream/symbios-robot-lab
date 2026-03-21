@@ -9,6 +9,11 @@ use symbios::system::mutate::{
 use symbios_genetics::Genotype;
 use symbios_neat::NeatGenome;
 
+/// Combined genotype for body (L-System morphology) and brain (NEAT network).
+///
+/// Implements `Genotype` for mutation and crossover. The L-System is mutated
+/// through parametric, structural, topological, and operator-flip operators;
+/// the NEAT genome is mutated and crossed over independently.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AgentGenotype {
     /// The Body: L-System source code that generates the RobotBlueprint

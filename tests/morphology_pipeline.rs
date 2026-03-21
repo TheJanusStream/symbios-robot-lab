@@ -71,7 +71,7 @@ L -> J B(len) J B(len)";
 // Mutation stability
 // ---------------------------------------------------------------------------
 
-const QUADRUPED: &str = MORPHOLOGY_POOL[0];
+const MILLIPEDE: &str = MORPHOLOGY_POOL[0];
 
 #[test]
 fn mutated_morphology_still_parses() {
@@ -81,7 +81,7 @@ fn mutated_morphology_still_parses() {
 
     let mut rng = Pcg64::seed_from_u64(42);
 
-    let mut system = System::from_source(QUADRUPED).expect("valid source");
+    let mut system = System::from_source(MILLIPEDE).expect("valid source");
     let config = MutationConfig {
         constant_rate: 0.5,
         constant_strength: 0.3,

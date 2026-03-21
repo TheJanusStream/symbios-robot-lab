@@ -34,8 +34,8 @@ impl Default for GenerationTimer {
 /// Parent pool supporting multiple evolutionary algorithm strategies.
 ///
 /// Stores evaluated `Phenotype`s with two objectives:
-///   - Objective 0: displacement * avg_up_alignment (walker fitness — maximize)
-///   - Objective 1: -(energy / displacement) (energy efficiency — maximize, i.e. minimize energy per meter)
+///   - Objective 0: displacement * avg_up_alignment * (avg_height.min(1) + 0.5) (walker fitness — maximize)
+///   - Objective 1: -(energy / displacement.max(1)) (energy efficiency — maximize, i.e. minimize energy per meter)
 ///
 /// Three selection modes:
 ///   - **NSGA-II**: non-dominated sort + crowding distance, binary tournament

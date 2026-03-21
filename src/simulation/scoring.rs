@@ -125,7 +125,7 @@ pub fn track_metrics(
 
 /// Walker fitness using displacement, posture, and energy efficiency.
 ///
-/// Primary fitness value: displacement * average_up_alignment.
+/// Primary fitness value: forward_displacement * avg_up_alignment * (avg_height + 0.5).
 /// NSGA-II objectives are set in `tick_generation`.
 ///
 /// During the settling period (first third of a generation), fitness remains 0.
