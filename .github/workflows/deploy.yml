@@ -51,7 +51,6 @@ jobs:
       - name: Assemble Site
         run: |
           cp index.html ./dist/
-          cp -r assets ./dist/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
