@@ -135,8 +135,7 @@ impl Genotype for AgentGenotype {
         // 3. Mutate L-System iteration count (±1, clamped to [1, 6])
         if rng.random_bool((rate * 0.1) as f64) {
             let delta: i32 = if rng.random_bool(0.5) { 1 } else { -1 };
-            self.lsystem_iterations =
-                (self.lsystem_iterations as i32 + delta).clamp(1, 6) as usize;
+            self.lsystem_iterations = (self.lsystem_iterations as i32 + delta).clamp(1, 6) as usize;
         }
 
         // 4. Mutate Brain

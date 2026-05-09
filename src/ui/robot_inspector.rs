@@ -1,7 +1,7 @@
 use crate::core::population::Population;
 use crate::simulation::brain::{
-    AgentImu, AgentJoint, AgentTouch, RobotBrain, INPUTS_PER_IMU, INPUTS_PER_JOINT,
-    INPUTS_PER_TOUCH, NUM_CLOCK_INPUTS,
+    AgentImu, AgentJoint, AgentTouch, AgentUltrasonic, INPUTS_PER_IMU, INPUTS_PER_JOINT,
+    INPUTS_PER_TOUCH, INPUTS_PER_ULTRASONIC, NUM_CLOCK_INPUTS, RobotBrain,
 };
 use crate::visuals::ui::CameraTarget;
 use bevy::prelude::*;
@@ -16,6 +16,7 @@ pub fn render_robot_inspector(
     population: Res<Population>,
     imus: Query<&AgentImu>,
     touches: Query<&AgentTouch>,
+    ultrasonics: Query<&AgentUltrasonic>,
     joints: Query<&AgentJoint>,
 ) {
     let Some(agent_index) = target.agent_index else {
@@ -88,10 +89,15 @@ pub fn render_robot_inspector(
                 .iter()
                 .filter(|t| t.brain_entity == brain_entity)
                 .count();
+            let num_ultrasonics = ultrasonics
+                .iter()
+                .filter(|u| u.brain_entity == brain_entity)
+                .count();
             let num_joints = joints
                 .iter()
                 .filter(|j| j.brain_entity == brain_entity)
                 .count();
+            let num_prismatics = brain.prismatic_entities.len();
 
             ui.separator();
             ui.heading("Topology");
@@ -103,7 +109,7 @@ pub fn render_robot_inspector(
                     ui.label(format!("{}", brain.sensor_inputs.len()));
                     ui.end_row();
                     ui.label("Outputs:");
-                    ui.label(format!("{}", brain.joint_entities.len()));
+                    ui.label(format!("{}", num_joints + num_prismatics));
                     ui.end_row();
                     ui.label("IMUs:");
                     ui.label(format!("{num_imus}"));
@@ -111,8 +117,14 @@ pub fn render_robot_inspector(
                     ui.label("Touch:");
                     ui.label(format!("{num_touches}"));
                     ui.end_row();
-                    ui.label("Joints:");
+                    ui.label("Ultrasonic:");
+                    ui.label(format!("{num_ultrasonics}"));
+                    ui.end_row();
+                    ui.label("Hinge joints:");
                     ui.label(format!("{num_joints}"));
+                    ui.end_row();
+                    ui.label("Prismatic joints:");
+                    ui.label(format!("{num_prismatics}"));
                     ui.end_row();
                 });
 
@@ -171,9 +183,19 @@ pub fn render_robot_inspector(
                                 }
                             }
 
+                            // Ultrasonic inputs
+                            let ultra_start = touch_start + num_touches * INPUTS_PER_TOUCH;
+                            for i in 0..num_ultrasonics {
+                                let idx = ultra_start + i * INPUTS_PER_ULTRASONIC;
+                                if idx < inputs.len() {
+                                    ui.label(format!("ultra{i}:"));
+                                    ui.label(format!("{:.3}", inputs[idx]));
+                                    ui.end_row();
+                                }
+                            }
+
                             // Joint angle inputs
-                            let joint_start =
-                                touch_start + num_touches * INPUTS_PER_TOUCH;
+                            let joint_start = ultra_start + num_ultrasonics * INPUTS_PER_ULTRASONIC;
                             for i in 0..num_joints {
                                 let idx = joint_start + i * INPUTS_PER_JOINT;
                                 if idx < inputs.len() {

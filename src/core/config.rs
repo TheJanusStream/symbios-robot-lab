@@ -8,22 +8,32 @@ pub enum GeneticAlgorithm {
     /// Multi-objective: Pareto non-dominated sort + crowding distance.
     #[default]
     Nsga2,
-    /// Quality-diversity: archive grid indexed by behavioural descriptor.
+    /// Quality-diversity: regular grid archive indexed by behavioural descriptor.
     MapElites,
+    /// Quality-diversity: Voronoi (CVT) archive over centroids generated via Lloyd's
+    /// algorithm. Better coverage when the feasible region is irregular.
+    CvtMapElites,
+    /// Open-ended search: selection driven by behavioural novelty (kNN distance to
+    /// archive + population), blended with fitness via `alpha`.
+    NoveltySearch,
 }
 
 impl GeneticAlgorithm {
-    pub const ALL: [GeneticAlgorithm; 3] = [
+    pub const ALL: [GeneticAlgorithm; 5] = [
         GeneticAlgorithm::SimpleGA,
         GeneticAlgorithm::Nsga2,
         GeneticAlgorithm::MapElites,
+        GeneticAlgorithm::CvtMapElites,
+        GeneticAlgorithm::NoveltySearch,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             GeneticAlgorithm::SimpleGA => "SimpleGA",
             GeneticAlgorithm::Nsga2 => "NSGA-II",
-            GeneticAlgorithm::MapElites => "MAP-Elites",
+            GeneticAlgorithm::MapElites => "MAP-Elites (grid)",
+            GeneticAlgorithm::CvtMapElites => "CVT-MAP-Elites",
+            GeneticAlgorithm::NoveltySearch => "Novelty Search",
         }
     }
 }

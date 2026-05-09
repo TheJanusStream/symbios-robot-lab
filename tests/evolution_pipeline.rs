@@ -29,7 +29,7 @@ fn neat_genome_evaluates_without_panic() {
     let mut rng = Pcg64::seed_from_u64(42);
     let genome = make_genome(&mut rng);
 
-    let evaluator = symbios_neat::CppnEvaluator::new(&genome);
+    let evaluator = symbios_neat::CppnEvaluator::new(&genome).expect("acyclic genome");
     let outputs = evaluator.evaluate(&[0.5, -0.5, 0.1, 0.0]);
 
     assert_eq!(outputs.len(), 8, "Should have 8 outputs (one per joint)");
@@ -58,7 +58,7 @@ fn mutation_preserves_network_topology() {
 
     // Should still be evaluable after breaking cycles
     genome.break_cycles();
-    let evaluator = symbios_neat::CppnEvaluator::new(&genome);
+    let evaluator = symbios_neat::CppnEvaluator::new(&genome).expect("acyclic after break_cycles");
     let outputs = evaluator.evaluate(&[1.0, 0.0, -1.0, 0.5]);
     assert_eq!(outputs.len(), 8);
 }
@@ -73,6 +73,42 @@ fn crossover_preserves_io_counts() {
 
     assert_eq!(child.input_ids.len(), 4);
     assert_eq!(child.output_ids.len(), 8);
+}
+
+#[test]
+fn cvt_centroids_partition_descriptor_space() {
+    // Verify CvtMapElites::with_lloyd produces enough centroids and that the
+    // assign_to_centroid mapping is a function (deterministic, in-bounds).
+    use symbios_genetics::algorithms::cvt_map_elites::CvtMapElites;
+    let cvt = CvtMapElites::<symbios_neat::NeatGenome>::with_lloyd(
+        16,    // num_centroids
+        2,     // descriptor_dim
+        2_000, // num_samples
+        10,    // lloyd_iters
+        0.0, 1, 0, // unused fields
+    );
+    assert_eq!(cvt.num_centroids(), 16);
+
+    let probe = [0.5_f32, 0.5];
+    let idx = cvt.assign_to_centroid(&probe);
+    assert!(idx < cvt.num_centroids());
+
+    // Determinism: same descriptor maps to same centroid.
+    assert_eq!(idx, cvt.assign_to_centroid(&probe));
+}
+
+#[test]
+fn novelty_distance_is_symmetric_and_nonneg() {
+    use symbios_genetics::algorithms::novelty_search::{BehaviourDistance, EuclideanDistance};
+    let d = EuclideanDistance;
+    let a = [0.0_f32, 0.0];
+    let b = [3.0_f32, 4.0];
+    let dist_ab = d.distance(&a, &b);
+    let dist_ba = d.distance(&b, &a);
+    assert!((dist_ab - 5.0).abs() < 1e-5, "Pythagorean distance");
+    assert!((dist_ab - dist_ba).abs() < 1e-6, "symmetric");
+    assert!(dist_ab >= 0.0, "non-negative");
+    assert_eq!(d.distance(&a, &a), 0.0, "zero on identity");
 }
 
 #[test]

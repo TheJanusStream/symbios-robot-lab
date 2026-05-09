@@ -101,11 +101,33 @@ pub fn render_ui(
             GeneticAlgorithm::MapElites => {
                 ui.label(format!("Archive cells: {}", parent_pool.archive_size()));
             }
+            GeneticAlgorithm::CvtMapElites => {
+                ui.label(format!(
+                    "CVT cells: {} ({:.1}% coverage)",
+                    parent_pool.cvt_archive_size(),
+                    parent_pool.cvt_coverage() * 100.0
+                ));
+            }
+            GeneticAlgorithm::NoveltySearch => {
+                ui.label(format!(
+                    "Behaviour archive: {} descriptors",
+                    parent_pool.novelty_archive_size()
+                ));
+            }
             GeneticAlgorithm::SimpleGA => {
                 if let Some(&avg) = telemetry.avg_per_generation.last() {
                     ui.label(format!("Avg fitness: {:.5}", avg));
                 }
             }
+        }
+
+        // Archive CSV export (grid MAP-Elites or CVT)
+        if matches!(
+            config.algorithm,
+            GeneticAlgorithm::MapElites | GeneticAlgorithm::CvtMapElites
+        ) && ui.button("Export archive CSV").clicked()
+        {
+            export_archive_to_disk(&parent_pool, config.algorithm);
         }
 
         // Population fitness heatmap (sorted bar visualization)
@@ -437,6 +459,65 @@ pub fn render_ui(
             }
         }
 
+        // CVT-MAP-Elites: scatter centroids in descriptor space. Empty centroids
+        // are drawn dim grey; occupied centroids are coloured by their elite's
+        // fitness (red→green).
+        if config.algorithm == GeneticAlgorithm::CvtMapElites
+            && let Some(centroids) = parent_pool.cvt_centroids()
+            && !centroids.is_empty()
+        {
+            ui.separator();
+            ui.label("CVT centroids (up-alignment vs avg-height):");
+            let archive: std::collections::HashMap<usize, f32> =
+                parent_pool.cvt_archive_data().into_iter().collect();
+
+            let graph_size = ui.available_width().min(200.0);
+            let (rect, _resp) =
+                ui.allocate_exact_size(egui::vec2(graph_size, graph_size), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 4.0, egui::Color32::from_gray(30));
+
+            let max_fit = archive.values().copied().fold(0.01_f32, f32::max).max(0.01);
+
+            for (idx, c) in centroids.iter().enumerate() {
+                let cx = c.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                let cy = c.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                // y=0 at bottom
+                let sx = rect.min.x + cx * graph_size;
+                let sy = rect.max.y - cy * graph_size;
+                let (color, radius) = match archive.get(&idx).copied() {
+                    Some(f) => {
+                        let t = (f / max_fit).clamp(0.0, 1.0);
+                        (
+                            egui::Color32::from_rgb(
+                                (255.0 * (1.0 - t)) as u8,
+                                (255.0 * t) as u8,
+                                50,
+                            ),
+                            4.0,
+                        )
+                    }
+                    None => (egui::Color32::from_gray(60), 2.0),
+                };
+                painter.circle_filled(egui::pos2(sx, sy), radius, color);
+            }
+
+            painter.text(
+                rect.right_bottom() + egui::vec2(-2.0, -2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                "up-align",
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
+            painter.text(
+                rect.left_top() + egui::vec2(2.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                "height",
+                egui::FontId::proportional(9.0),
+                egui::Color32::from_gray(120),
+            );
+        }
+
         // SimpleGA: average fitness per generation graph
         if config.algorithm == GeneticAlgorithm::SimpleGA && telemetry.avg_per_generation.len() >= 2
         {
@@ -512,4 +593,24 @@ pub fn render_ui(
             );
         }
     });
+}
+
+/// Writes the current quality-diversity archive (grid MAP-Elites or CVT) to a
+/// timestamped CSV in the working directory. Logged on success/failure;
+/// invoked from the egui "Export archive CSV" button.
+fn export_archive_to_disk(parent_pool: &ParentPool, algorithm: GeneticAlgorithm) {
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let suffix = match algorithm {
+        GeneticAlgorithm::MapElites => "grid",
+        GeneticAlgorithm::CvtMapElites => "cvt",
+        _ => return,
+    };
+    let path = format!("archive_{suffix}_{timestamp}.csv");
+    match std::fs::File::create(&path) {
+        Ok(file) => match parent_pool.export_archive_csv(algorithm, file) {
+            Ok(rows) => info!("Exported {} archive cells to {}", rows, path),
+            Err(e) => warn!("Archive CSV write failed: {}", e),
+        },
+        Err(e) => warn!("Could not create {}: {}", path, e),
+    }
 }

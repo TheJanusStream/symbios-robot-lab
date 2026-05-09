@@ -21,7 +21,7 @@ fn build_blueprint_from_source(source: &str) -> symbios_robot::RobotBlueprint {
 fn count_hinge_joints(bp: &symbios_robot::RobotBlueprint) -> usize {
     bp.joints
         .iter()
-        .filter(|j| j.joint_type == JointType::Hinge)
+        .filter(|j| matches!(j.joint_type, JointType::Hinge { .. }))
         .count()
 }
 
@@ -72,6 +72,88 @@ L -> J B(len) J B(len)";
 // ---------------------------------------------------------------------------
 
 const MILLIPEDE: &str = MORPHOLOGY_POOL[0];
+
+#[test]
+fn prismatic_joint_symbol_produces_prismatic_joint() {
+    // Jp sets the next J's type to Prismatic; the resulting blueprint joint
+    // should match JointType::Prismatic { .. }.
+    let bp = build_blueprint_from_source("omega: B(1) Ja(0,1,0) Jl(-0.5,0.5,1000,2) Jp K(0.5)");
+    assert_eq!(bp.modules.len(), 2);
+    assert_eq!(bp.joints.len(), 1);
+    assert!(
+        matches!(bp.joints[0].joint_type, JointType::Prismatic { .. }),
+        "Expected Prismatic joint, got {:?}",
+        bp.joints[0].joint_type
+    );
+}
+
+#[test]
+fn end_effector_symbol_pins_ee_to_module() {
+    // E(id) marks the end-effector at the turtle's current pose, pinned to
+    // the module the turtle is standing on. One module + one EE.
+    let bp = build_blueprint_from_source("omega: B(1) E(7)");
+    assert_eq!(bp.modules.len(), 1);
+    assert_eq!(bp.end_effectors.len(), 1);
+    assert_eq!(bp.end_effectors[0].id, 7);
+}
+
+#[test]
+fn ultrasonic_sensor_mounts_on_current_module() {
+    // Su mounts an Ultrasonic sensor on the turtle's current module.
+    use symbios_robot::SensorType;
+    let bp = build_blueprint_from_source("omega: B(1) Su");
+    assert_eq!(bp.modules.len(), 1);
+    let sensors: Vec<_> = bp
+        .modules
+        .values()
+        .flat_map(|m| m.sensors.iter().map(|s| s.sensor_type))
+        .collect();
+    assert!(
+        sensors.iter().any(|t| matches!(t, SensorType::Ultrasonic)),
+        "Expected an Ultrasonic sensor, got {:?}",
+        sensors
+    );
+}
+
+#[test]
+fn new_inchworm_preset_compiles_with_prismatic() {
+    // The hot-added Inchworm preset (3rd from end) exercises Jp; verify it
+    // parses and produces at least one prismatic joint.
+    let inchworm = MORPHOLOGY_POOL[MORPHOLOGY_POOL.len() - 2];
+    let bp = build_blueprint_from_source(inchworm);
+    let prismatics = bp
+        .joints
+        .iter()
+        .filter(|j| matches!(j.joint_type, JointType::Prismatic { .. }))
+        .count();
+    assert!(
+        prismatics >= 1,
+        "Inchworm preset should produce >= 1 prismatic joint, got {}",
+        prismatics
+    );
+}
+
+#[test]
+fn new_sentinel_preset_emits_ultrasonic_and_ee() {
+    use symbios_robot::SensorType;
+    let sentinel = MORPHOLOGY_POOL[MORPHOLOGY_POOL.len() - 1];
+    let bp = build_blueprint_from_source(sentinel);
+    let ultras = bp
+        .modules
+        .values()
+        .flat_map(|m| m.sensors.iter())
+        .filter(|s| matches!(s.sensor_type, SensorType::Ultrasonic))
+        .count();
+    assert!(
+        ultras >= 4,
+        "Sentinel preset should mount >= 4 ultrasonic sensors, got {}",
+        ultras
+    );
+    assert!(
+        !bp.end_effectors.is_empty(),
+        "Sentinel preset should declare end-effectors"
+    );
+}
 
 #[test]
 fn mutated_morphology_still_parses() {

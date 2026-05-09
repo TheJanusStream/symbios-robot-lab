@@ -3,6 +3,10 @@ use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
+use bevy_symbios::loader::{LSystemAssetPlugin, LSystemSource};
+use bevy_symbios::materials::{
+    MaterialSettingsChanged, apply_foliage_textures, on_material_settings_changed,
+};
 
 mod core;
 mod simulation;
@@ -24,12 +28,15 @@ fn main() {
             EguiPlugin::default(),
             PanOrbitCameraPlugin,
             PhysicsPlugins::default(),
+            LSystemAssetPlugin,
         ))
         .add_message::<SpawnRequest>()
+        .add_message::<AssetEvent<LSystemSource>>()
         // Resources
         .insert_resource(SubstepCount(12))
         .init_resource::<core::config::LabConfig>()
         .init_resource::<core::population::Population>()
+        .init_resource::<core::hotload::RuntimeMorphologyPool>()
         .init_resource::<bevy_symbios::materials::MaterialSettingsMap>()
         .init_resource::<simulation::generation::GenerationTimer>()
         .init_resource::<simulation::generation::ParentPool>()
@@ -42,8 +49,14 @@ fn main() {
                 simulation::arena::setup_arena,
                 simulation::physics::setup_physics,
                 visuals::robot_render::setup_materials,
-            ),
+                trigger_initial_material_sync,
+                core::hotload::load_morphologies_folder,
+            )
+                .chain(),
         )
+        // Observer: applies MaterialSettingsMap to StandardMaterials whenever
+        // MaterialSettingsChanged is triggered (replaces the old polling system).
+        .add_observer(on_material_settings_changed)
         // UI (egui pass)
         .add_systems(
             EguiPrimaryContextPass,
@@ -92,8 +105,17 @@ fn main() {
                 simulation::physics::sync_time_scale,
                 visuals::ui::click_to_follow,
                 visuals::ui::follow_target,
-                bevy_symbios::materials::sync_material_properties,
+                apply_foliage_textures,
+                core::hotload::refresh_runtime_pool,
             ),
         )
         .run();
+}
+
+/// Fires `MaterialSettingsChanged` once at startup so the observer applies the
+/// initial `MaterialSettingsMap` defaults to every freshly-created
+/// `StandardMaterial`. Subsequent triggers come from UI mutations (none yet,
+/// but wired so the lab is observer-ready).
+fn trigger_initial_material_sync(mut commands: Commands) {
+    commands.trigger(MaterialSettingsChanged);
 }

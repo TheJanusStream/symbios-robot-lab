@@ -126,4 +126,41 @@ Foot -> Jf !(0.1) [ +(90) K(0.6) ] [ -(90) K(0.6) ] St",
 omega: !(0.8) O Si [ &(90) Arm ] [ \\(72) &(90) Arm ] [ \\(144) &(90) Arm ] [ /(144) &(90) Arm ] [ /(72) &(90) Arm ]
 // Two-segment arm allows 'pulling' the body forward
 Arm -> Jl(jmin, jmax, eff, vel) J K(seg) Jl(jmin, jmax, eff, vel) J K(seg) St",
+
+    // ── Inchworm (Telescoping) ─────────────────────────────────────────
+    // Demonstrates prismatic (slider) joints from the symbios-robot 0.3.0
+    // upstream. Two body segments connected by Jp drive a periodic
+    // extend/retract motion; hinges at the ends bend the body. The brain
+    // gets 1 hinge output then 1 prismatic output (axis-Y stroke).
+    "\
+#define jmin -0.6
+#define jmax 0.6
+#define eff 2500
+#define vel 3
+#define pmin -0.5
+#define pmax 0.5
+#define peff 5000
+#define pvel 2
+omega: !(0.4) O Si Body
+Body -> [ Jl(jmin, jmax, eff, vel) J K(0.8) ]\
+        Ja(0,1,0) Jl(pmin, pmax, peff, pvel) Jp K(0.4)\
+        [ Jl(jmin, jmax, eff, vel) J K(0.8) St ]",
+
+    // ── Sentinel (Sensor Tower) ────────────────────────────────────────
+    // Demonstrates ultrasonic sensors (Su) and end-effector pinning (E)
+    // from symbios-robot 0.3.0. Stationary armature: a tall body with
+    // four ultrasonic sensors aimed outward and EEs at each arm tip,
+    // useful as a substrate for evolved scanning behaviours.
+    "\
+#define jmin -0.9
+#define jmax 0.9
+#define eff 1500
+#define vel 4
+#define seg 0.6
+omega: !(0.5) O Si\
+       [ &(60) Arm(1) ]\
+       [ \\(90) &(60) Arm(2) ]\
+       [ \\(180) &(60) Arm(3) ]\
+       [ /(90) &(60) Arm(4) ]
+Arm(id) -> Jl(jmin, jmax, eff, vel) J K(seg) Su Jl(jmin, jmax, eff, vel) J K(seg) Su E(id) St",
 ];

@@ -4,6 +4,7 @@ use crate::simulation::brain::{MAX_MOTOR_TORQUE, RobotBrain};
 use crate::simulation::generation::GenerationTimer;
 use avian3d::prelude::*;
 use bevy::prelude::*;
+use symbios_genetics::scorers::{Const, Multiply, Scorer, Sum};
 
 /// Baseline position and forward direction for fitness measurement.
 /// Starts as `None`; set after the settling period so the initial fall
@@ -32,6 +33,92 @@ const MAX_Y: f32 = 10.0;
 
 /// Only recalculate displacement fitness every N fixed steps.
 const FITNESS_CALC_INTERVAL: u32 = 4;
+
+/// Lab-specific physics-trajectory state used as the input `S` for our
+/// `Scorer<S, f32>` composition. A separate type from `symbios_genetics::Trajectory`
+/// because the lab tracks running-mean posture (avg_up_alignment, avg_height)
+/// rather than terminal/peak values.
+#[derive(Clone, Debug, Default)]
+pub struct AgentTrajectory {
+    /// Forward displacement projected on the initial forward direction.
+    pub forward_displacement: f32,
+    /// Average up-alignment over the post-settling window, clamped to `[0, 1]`.
+    pub avg_up_alignment: f32,
+    /// Average body height (Y) over the post-settling window, in metres.
+    pub avg_height: f32,
+    /// Total motor energy consumed during the eval window (sum of |τ·ω|·dt).
+    pub energy_used: f32,
+}
+
+/// Forward displacement scorer (X+ axis projection captured at baseline).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ForwardDisplacement;
+impl Scorer<AgentTrajectory, f32> for ForwardDisplacement {
+    fn score(&self, t: &AgentTrajectory) -> f32 {
+        t.forward_displacement
+    }
+}
+
+/// Average upright alignment over the eval window.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AvgUpAlignment;
+impl Scorer<AgentTrajectory, f32> for AvgUpAlignment {
+    fn score(&self, t: &AgentTrajectory) -> f32 {
+        t.avg_up_alignment
+    }
+}
+
+/// Average body height (capped at 1.0 to prevent rocket-launch exploit).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AvgHeightCapped;
+impl Scorer<AgentTrajectory, f32> for AvgHeightCapped {
+    fn score(&self, t: &AgentTrajectory) -> f32 {
+        t.avg_height.min(1.0)
+    }
+}
+
+/// Energy-efficiency objective: `-(energy / max(displacement, 1))`.
+/// Higher (less negative) is better. NSGA-II treats it as maximize-me.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnergyEfficiency;
+impl Scorer<AgentTrajectory, f32> for EnergyEfficiency {
+    fn score(&self, t: &AgentTrajectory) -> f32 {
+        -(t.energy_used / t.forward_displacement.max(1.0))
+    }
+}
+
+/// Walker fitness composite:
+///   `forward_displacement * avg_up_alignment * (avg_height_capped + 0.5)`.
+///
+/// Built from upstream combinators so the formula is a single typed expression
+/// rather than inline arithmetic. Cheap (the scorers are zero-sized).
+type WalkerFitness =
+    Multiply<Multiply<ForwardDisplacement, AvgUpAlignment>, Sum<AvgHeightCapped, Const<f32>>>;
+
+const fn walker_fitness() -> WalkerFitness {
+    Multiply(
+        Multiply(ForwardDisplacement, AvgUpAlignment),
+        Sum(AvgHeightCapped, Const(0.5)),
+    )
+}
+
+/// Computes `(fitness, objectives, descriptor)` for an `AgentTrajectory`,
+/// using the same composite scorer for fitness and exposing the secondary
+/// objectives/descriptor expected by NSGA-II / MAP-Elites.
+///
+/// `descriptor` is the normalised `(avg_up_alignment, avg_height)` pair used
+/// as MAP-Elites cell coordinates.
+pub fn evaluate_trajectory(t: &AgentTrajectory) -> (f32, Vec<f32>, Vec<f32>) {
+    let fitness = walker_fitness().score(t);
+    let objectives = vec![fitness, EnergyEfficiency.score(t)];
+
+    const MAX_DESCRIPTOR_HEIGHT: f32 = 3.0;
+    let descriptor = vec![
+        t.avg_up_alignment.clamp(0.0, 1.0),
+        (t.avg_height / MAX_DESCRIPTOR_HEIGHT).clamp(0.0, 1.0),
+    ];
+    (fitness, objectives, descriptor)
+}
 
 /// Checks all robots for physics explosion each fixed step. Runs from the
 /// first frame (no settling gate) so unstable robots are culled before
@@ -123,10 +210,7 @@ pub fn track_metrics(
     }
 }
 
-/// Walker fitness using displacement, posture, and energy efficiency.
-///
-/// Primary fitness value: forward_displacement * avg_up_alignment * (avg_height + 0.5).
-/// NSGA-II objectives are set in `tick_generation`.
+/// Walker fitness using composable upstream `Scorer`s.
 ///
 /// During the settling period (first third of a generation), fitness remains 0.
 /// Once settling ends, the body's position is snapshotted as baseline.
@@ -186,7 +270,6 @@ pub fn update_fitness_scores(
         let displacement = body_pos - base_pos;
         let forward_displacement = displacement.dot(forward).max(0.0);
 
-        // Walker fitness: displacement * average up-alignment
         let avg_up = if brain.metric_ticks > 0 {
             (brain.up_alignment_sum / brain.metric_ticks as f32).clamp(0.0, 1.0)
         } else {
@@ -199,7 +282,14 @@ pub fn update_fitness_scores(
             0.0
         };
 
-        let fitness = forward_displacement * avg_up * (avg_height + 0.5);
+        let trajectory = AgentTrajectory {
+            forward_displacement,
+            avg_up_alignment: avg_up,
+            avg_height,
+            energy_used: brain.energy_consumed,
+        };
+
+        let fitness = walker_fitness().score(&trajectory);
 
         if let Some(agent) = pop.agents.get_mut(idx) {
             agent.fitness = if fitness.is_finite() { fitness } else { 0.0 };

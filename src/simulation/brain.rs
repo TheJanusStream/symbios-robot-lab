@@ -19,6 +19,33 @@ pub struct AgentJoint {
     pub input_offset: usize,
 }
 
+/// Tag for a prismatic (slider) joint driven by the brain. No proprioception
+/// input wired yet — the brain only writes its `target_velocity`. The output
+/// index is the joint's position in `RobotBrain.prismatic_entities`.
+#[derive(Component)]
+pub struct AgentPrismaticJoint;
+
+/// Ultrasonic distance sensor mounted on a module. On each tick we raycast
+/// forward (along the module's local +X) up to `ULTRASONIC_MAX_RANGE` and
+/// write `1.0 - hit_distance / max_range` (so closer = larger reading).
+///
+/// `brain_entity` and `input_offset` enable cache-friendly linear iteration.
+#[derive(Component)]
+pub struct AgentUltrasonic {
+    /// Entity that holds this sensor's `RobotBrain`.
+    pub brain_entity: Entity,
+    /// Index in `RobotBrain.sensor_inputs` for this sensor's reading.
+    pub input_offset: usize,
+}
+
+/// Visual marker for a `RobotBlueprint::end_effectors` entry. Pure cosmetic;
+/// not yet used by scoring or the brain. Kept so future scoring can find them.
+#[derive(Component)]
+pub struct AgentEndEffector;
+
+/// Maximum range of the ultrasonic sensor (metres). Hits beyond this clamp to 0.
+pub const ULTRASONIC_MAX_RANGE: f32 = 8.0;
+
 /// Holds the compiled NEAT network for a single agent, along with direct
 /// entity references to its sensors and joints for O(1) access.
 #[derive(Component)]
@@ -28,10 +55,15 @@ pub struct RobotBrain {
     pub scratchpad: EvalScratchpad,
     pub agent_index: usize,
     /// Pre-allocated input buffer filled by `gather_sensor_inputs`.
-    /// Layout: [sin(t), cos(t), imu0..., imu1..., touch0, touch1, ..., joint0_angle, ...]
+    /// Layout: [sin(t), cos(t), imu0..., touch0..., ultrasonic0..., joint0_angle, ...].
     pub sensor_inputs: Vec<f32>,
-    /// Hinge joint entities, ordered by joint_index (matches NEAT output order).
+    /// Hinge joint entities, ordered by joint_index (matches the FIRST N
+    /// motor outputs of the NEAT network).
     pub joint_entities: Vec<Entity>,
+    /// Prismatic (slider) joint entities, ordered by index. Outputs are
+    /// laid out AFTER all hinge outputs, so `output[hinge_count + i]`
+    /// drives `prismatic_entities[i]`.
+    pub prismatic_entities: Vec<Entity>,
     /// Module entities excluding the brain/body entity, for explosion checks.
     pub module_entities: Vec<Entity>,
     /// Cumulative energy consumed: sum of |torque * angular_velocity| * dt.
@@ -82,6 +114,8 @@ pub const NUM_CLOCK_INPUTS: usize = 2;
 pub const INPUTS_PER_IMU: usize = 6;
 /// Each touch sensor contributes 1 value (contact boolean).
 pub const INPUTS_PER_TOUCH: usize = 1;
+/// Each ultrasonic sensor contributes 1 value (proximity in [0, 1]).
+pub const INPUTS_PER_ULTRASONIC: usize = 1;
 /// Each hinge joint contributes 1 value (current angle / π, normalized to [-1, 1]).
 pub const INPUTS_PER_JOINT: usize = 1;
 
@@ -91,14 +125,21 @@ pub const INPUTS_PER_JOINT: usize = 1;
 ///   0..2:                sin(t), cos(t)  — oscillation clocks
 ///   2..2+6N_imu:         linear accel (x,y,z) + angular accel (x,y,z) per IMU
 ///   ..+N_touch:          contact flag per touch sensor
+///   ..+N_ultra:          proximity reading per ultrasonic sensor
 ///   ..+N_hinge:          current angle per hinge joint (normalized to [-1, 1])
 ///
-/// Outputs (one per hinge joint):
+/// Outputs (one per hinge then one per prismatic joint):
 ///   Each output is tanh-activated → [-1, 1], mapped to target_velocity.
-pub fn compute_num_inputs(num_imus: usize, num_touches: usize, num_hinges: usize) -> usize {
+pub fn compute_num_inputs(
+    num_imus: usize,
+    num_touches: usize,
+    num_ultrasonics: usize,
+    num_hinges: usize,
+) -> usize {
     NUM_CLOCK_INPUTS
         + num_imus * INPUTS_PER_IMU
         + num_touches * INPUTS_PER_TOUCH
+        + num_ultrasonics * INPUTS_PER_ULTRASONIC
         + num_hinges * INPUTS_PER_JOINT
 }
 
@@ -123,8 +164,8 @@ pub struct DriveMotorsBuffers {
     motor_commands: Vec<(Entity, f32)>,
 }
 
-/// Gathers sensor data from all IMU and touch sensors into their owning
-/// brain's `sensor_inputs` buffer. Iterates sensor archetypes linearly
+/// Gathers sensor data from all IMU, touch, and ultrasonic sensors into their
+/// owning brain's `sensor_inputs` buffer. Iterates sensor archetypes linearly
 /// (cache-friendly) rather than doing per-brain random entity lookups.
 ///
 /// Runs in `FixedUpdate` before `drive_motors`.
@@ -132,8 +173,10 @@ pub fn gather_sensor_inputs(
     mut brains: Query<&mut RobotBrain>,
     mut imus: Query<(&mut AgentImu, &LinearVelocity, &AngularVelocity)>,
     touches: Query<(&AgentTouch, Option<&CollidingEntities>)>,
+    ultrasonics: Query<(&AgentUltrasonic, &GlobalTransform)>,
     agent_joints: Query<(&AgentJoint, &RevoluteJoint)>,
     rotations: Query<&Rotation>,
+    spatial_query: SpatialQuery,
     time: Res<Time>,
 ) {
     let t = time.elapsed_secs();
@@ -182,6 +225,29 @@ pub fn gather_sensor_inputs(
         }
     }
 
+    // Phase 3b: Ultrasonic raycasts. Cast forward (sensor's world +X) up to
+    // ULTRASONIC_MAX_RANGE; write 1.0 - hit/max so closer = larger reading.
+    // Excluding self-body avoids the sensor reading its own mount.
+    for (sensor, transform) in &ultrasonics {
+        let origin = transform.translation();
+        let direction = transform.rotation() * Vec3::X;
+        let dir = match Dir3::new(direction) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let filter = SpatialQueryFilter::default();
+        let proximity =
+            match spatial_query.cast_ray(origin, dir, ULTRASONIC_MAX_RANGE, true, &filter) {
+                Some(hit) => (1.0 - (hit.distance / ULTRASONIC_MAX_RANGE)).clamp(0.0, 1.0),
+                None => 0.0,
+            };
+        if let Ok(mut brain) = brains.get_mut(sensor.brain_entity)
+            && sensor.input_offset < brain.sensor_inputs.len()
+        {
+            brain.sensor_inputs[sensor.input_offset] = proximity;
+        }
+    }
+
     // Phase 4: Linear pass over all hinge joint angle sensors.
     // Computes the signed angle around the hinge axis from the two body
     // rotations and their local joint frames, normalized to [-1, 1].
@@ -216,11 +282,17 @@ pub fn gather_sensor_inputs(
     }
 }
 
+/// Maximum prismatic motor velocity (m/s) at output ±1.
+const MAX_PRISMATIC_VELOCITY: f32 = 1.5;
+/// Maximum prismatic motor force (N).
+const MAX_PRISMATIC_FORCE: f32 = 5000.0;
+
 /// Evaluates each agent's NEAT brain using pre-gathered sensor inputs
-/// and drives its joint motors.
+/// and drives its joint motors (revolute first, then prismatic).
 ///
 /// Reads from `RobotBrain.sensor_inputs` (filled by `gather_sensor_inputs`)
-/// and writes motor commands to `RevoluteJoint` components.
+/// and writes motor commands to `RevoluteJoint` and `PrismaticJoint`
+/// components.
 ///
 /// Runs in `FixedUpdate` after `gather_sensor_inputs`, but only evaluates
 /// every `BRAIN_EVAL_INTERVAL` steps. Motors hold their last commanded
@@ -229,6 +301,7 @@ pub fn gather_sensor_inputs(
 pub fn drive_motors(
     mut brains: Query<&mut RobotBrain>,
     mut joints: Query<&mut RevoluteJoint>,
+    mut prismatics: Query<&mut PrismaticJoint>,
     mut bufs: Local<DriveMotorsBuffers>,
     mut step: Local<u32>,
 ) {
@@ -238,6 +311,7 @@ pub fn drive_motors(
     }
 
     bufs.motor_commands.clear();
+    let mut prismatic_commands: Vec<(Entity, f32)> = Vec::new();
 
     for brain in &mut brains {
         let DriveMotorsBuffers {
@@ -252,9 +326,17 @@ pub fn drive_motors(
             .evaluator
             .evaluate_into(&brain.sensor_inputs, outputs, &mut brain.scratchpad);
 
+        // First N_hinge outputs drive revolute joints.
         for (ji, &joint_entity) in brain.joint_entities.iter().enumerate() {
             if let Some(&output) = outputs.get(ji) {
                 motor_commands.push((joint_entity, output));
+            }
+        }
+        // Next N_prismatic outputs drive prismatic joints.
+        let prismatic_offset = brain.joint_entities.len();
+        for (pi, &joint_entity) in brain.prismatic_entities.iter().enumerate() {
+            if let Some(&output) = outputs.get(prismatic_offset + pi) {
+                prismatic_commands.push((joint_entity, output));
             }
         }
     }
@@ -263,6 +345,13 @@ pub fn drive_motors(
         if let Ok(mut joint) = joints.get_mut(joint_entity) {
             joint.motor.target_velocity = output * MAX_MOTOR_VELOCITY;
             joint.motor.max_torque = MAX_MOTOR_TORQUE;
+        }
+    }
+    for &(joint_entity, output) in &prismatic_commands {
+        if let Ok(mut joint) = prismatics.get_mut(joint_entity) {
+            joint.motor.target_velocity = output * MAX_PRISMATIC_VELOCITY;
+            joint.motor.max_force = MAX_PRISMATIC_FORCE;
+            joint.motor.enabled = true;
         }
     }
 }

@@ -1,21 +1,18 @@
 [package]
 name = "symbios-robot-lab"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.18"
+bevy = { version = "0.18", features = ["file_watcher"] }
 bevy_egui = "0.39"
 bevy_panorbit_camera = { version = "0.34", features = ["bevy_egui"] }
 avian3d = "0.6"
-symbios = "1.4"
-symbios-robot = "0.1"
-symbios-neat = "0.1"
-symbios-genetics = "0.1"
-bevy_symbios = { version = "0.3", features = [
-    "egui",
-    "robot",
-] }
+symbios = { path = "../symbios" }
+symbios-robot = { path = "../symbios-robot" }
+symbios-neat = { path = "../symbios-neat" }
+symbios-genetics = { path = "../symbios-genetics" }
+bevy_symbios = { path = "../bevy_symbios", features = ["egui", "robot", "asset-loader"] }
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 chrono = "0.4"

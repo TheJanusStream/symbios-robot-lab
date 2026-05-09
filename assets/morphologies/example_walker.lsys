@@ -1,0 +1,21 @@
+// Example hot-reloadable morphology. Edit this file (or drop new .lsys files
+// into this folder) and Bevy's file_watcher will reload it on the next change;
+// the new shape will appear in the next generation's fresh-injection pool.
+//
+// This particular preset is a simple 4-leg walker — minimal so the file is
+// easy to study and tweak.
+
+#define jmin -0.6
+#define jmax 0.6
+#define eff 2000
+#define vel 5
+#define lw 0.2
+#define seg 0.9
+
+omega: !(0.6) O Si
+       [ &(70) Leg ]
+       [ \(90) &(70) Leg ]
+       [ \(180) &(70) Leg ]
+       [ /(90) &(70) Leg ]
+
+Leg -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg) Jl(jmin, jmax, eff, vel) J K(seg) St

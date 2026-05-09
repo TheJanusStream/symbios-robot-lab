@@ -29,23 +29,32 @@ pub fn derive_blueprint(
 
     let mut num_imus = 0usize;
     let mut num_touches = 0usize;
+    let mut num_ultrasonics = 0usize;
     for module in blueprint.modules.values() {
         for sensor in &module.sensors {
             match sensor.sensor_type {
                 SensorType::IMU => num_imus += 1,
                 SensorType::Touch => num_touches += 1,
+                SensorType::Ultrasonic => num_ultrasonics += 1,
                 _ => {}
             }
         }
     }
 
-    let num_outputs = blueprint
+    let num_hinges = blueprint
         .joints
         .iter()
-        .filter(|j| j.joint_type == JointType::Hinge)
+        .filter(|j| matches!(j.joint_type, JointType::Hinge { .. }))
+        .count();
+    let num_prismatics = blueprint
+        .joints
+        .iter()
+        .filter(|j| matches!(j.joint_type, JointType::Prismatic { .. }))
         .count();
 
-    let num_inputs = compute_num_inputs(num_imus, num_touches, num_outputs);
+    let num_inputs = compute_num_inputs(num_imus, num_touches, num_ultrasonics, num_hinges);
+    // Outputs: one per actively-driven joint (hinge + prismatic).
+    let num_outputs = num_hinges + num_prismatics;
     Some((blueprint, num_inputs, num_outputs))
 }
 
