@@ -94,6 +94,7 @@ fn main() {
                 simulation::scoring::check_explosion,
                 simulation::brain::gather_sensor_inputs,
                 simulation::brain::drive_motors,
+                simulation::scoring::apply_perturbations,
                 simulation::scoring::track_metrics,
                 simulation::scoring::update_fitness_scores,
             )

@@ -618,7 +618,9 @@ pub fn tick_generation(
 
     // 1. Convert evaluated agents to Phenotypes via the upstream-Scorer-driven
     //    `evaluate_trajectory`. Agents with too few motors or zero displacement
-    //    get -inf objectives so any viable agent dominates them.
+    //    get -inf objectives so any viable agent dominates them. We rebuild
+    //    `AgentTrajectory` from the per-agent metric fields populated in
+    //    `update_fitness_scores`.
     let evaluated: Vec<Phenotype<AgentGenotype>> = population
         .agents
         .iter()
@@ -627,9 +629,31 @@ pub fn tick_generation(
                 if agent.num_motors > 4 && agent.displacement > f32::EPSILON {
                     let traj = crate::simulation::scoring::AgentTrajectory {
                         forward_displacement: agent.displacement,
+                        avg_velocity: agent.avg_velocity,
                         avg_up_alignment: agent.avg_up_alignment,
                         avg_height: agent.avg_height,
-                        energy_used: agent.energy_consumed,
+                        up_alignment_stddev: agent.up_alignment_stddev,
+                        com_bounce: agent.com_bounce,
+                        mechanical_work: agent.mechanical_work,
+                        // Mass is unknown at this point (only the brain has
+                        // it), but `cost_of_transport` was already computed
+                        // during scoring. Back-derive the mass that gives
+                        // the same CoT so `InverseCoT` lines up here too.
+                        mass: if agent.cost_of_transport.is_finite()
+                            && agent.cost_of_transport > 0.0
+                            && agent.displacement > 0.0
+                        {
+                            agent.mechanical_work
+                                / (agent.cost_of_transport * 9.81 * agent.displacement)
+                        } else {
+                            1.0
+                        },
+                        action_smoothness: agent.action_smoothness,
+                        control_jerk: agent.control_jerk,
+                        body_jerk: agent.body_jerk,
+                        support_duty_factor: agent.support_duty_factor,
+                        foot_transitions_per_sensor: agent.foot_transitions_per_sensor,
+                        action_intensity: agent.action_intensity,
                     };
                     evaluate_trajectory(&traj)
                 } else {
@@ -794,18 +818,7 @@ pub fn tick_generation(
             cached_blueprint = None;
         }
 
-        next_gen.push(Agent {
-            genotype: child,
-            fitness: 0.0,
-            num_motors,
-            root_entity: None,
-            body_entity: None,
-            cached_blueprint,
-            energy_consumed: 0.0,
-            displacement: 0.0,
-            avg_up_alignment: 0.0,
-            avg_height: 0.0,
-        });
+        next_gen.push(Agent::fresh(child, num_motors, cached_blueprint));
     }
 
     // 6. Despawn all old robot hierarchies

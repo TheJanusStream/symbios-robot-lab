@@ -17,7 +17,7 @@ pub struct Agent {
     pub body_entity: Option<Entity>,
     /// Cached blueprint from L-System derivation, avoids re-parsing at spawn.
     pub cached_blueprint: Option<RobotBlueprint>,
-    /// Cumulative energy consumed during the evaluation period.
+    /// Cumulative commanded-velocity energy proxy (kept for inspector display).
     pub energy_consumed: f32,
     /// Horizontal displacement from baseline (set by scoring).
     pub displacement: f32,
@@ -25,6 +25,71 @@ pub struct Agent {
     pub avg_up_alignment: f32,
     /// Average height during evaluation (metres, unbounded above 0).
     pub avg_height: f32,
+
+    // ── SOTA metrics (populated by `update_fitness_scores`) ────────────────
+    /// Mechanical-work proxy `Σ |τ_max · Δθ|` — numerator of CoT.
+    pub mechanical_work: f32,
+    /// Stddev of `up_alignment` over the eval window. Lower = more stable
+    /// orientation.
+    pub up_alignment_stddev: f32,
+    /// Stddev of body Y — the "CoM bounce" amplitude. Drives
+    /// `ComBounceReward`; near-zero is the vibrobot signature.
+    pub com_bounce: f32,
+    /// Mean forward velocity (m/s) over the post-settling window.
+    /// Drives `VelocityGate`.
+    pub avg_velocity: f32,
+    /// Mean per-tick per-joint `Σ |Δv_target|²`. Lower = smoother control.
+    pub action_smoothness: f32,
+    /// Mean per-tick per-joint `Σ |a_t − 2·a_{t−1} + a_{t−2}|²`. Drives
+    /// `ControlJerkReward` — the anti-vibration term.
+    pub control_jerk: f32,
+    /// Mean per-tick `|Δv_body|² / Δt`. Lower = smoother body motion.
+    pub body_jerk: f32,
+    /// Mean fraction of touch sensors in contact each tick. QD axis.
+    pub support_duty_factor: f32,
+    /// Mean contact↔air transitions per touch sensor over the window.
+    /// Drives `FootAirTimeFactor`.
+    pub foot_transitions_per_sensor: f32,
+    /// Mean per-joint commanded-velocity magnitude. QD axis.
+    pub action_intensity: f32,
+    /// Cost of Transport (dimensionless `E / (m·g·d)`). NSGA-II objective 1
+    /// is `1 / (1 + cost_of_transport)`.
+    pub cost_of_transport: f32,
+}
+
+impl Agent {
+    /// Fresh-individual constructor: zeroed metrics, no spawned entities,
+    /// optional cached blueprint. Avoids 14 boilerplate `: 0.0` lines at
+    /// every call site that creates a new agent.
+    pub fn fresh(
+        genotype: AgentGenotype,
+        num_motors: usize,
+        cached_blueprint: Option<RobotBlueprint>,
+    ) -> Self {
+        Self {
+            genotype,
+            fitness: 0.0,
+            num_motors,
+            root_entity: None,
+            body_entity: None,
+            cached_blueprint,
+            energy_consumed: 0.0,
+            displacement: 0.0,
+            avg_up_alignment: 0.0,
+            avg_height: 0.0,
+            mechanical_work: 0.0,
+            up_alignment_stddev: 0.0,
+            com_bounce: 0.0,
+            avg_velocity: 0.0,
+            action_smoothness: 0.0,
+            control_jerk: 0.0,
+            body_jerk: 0.0,
+            support_duty_factor: 0.0,
+            foot_transitions_per_sensor: 0.0,
+            action_intensity: 0.0,
+            cost_of_transport: 0.0,
+        }
+    }
 }
 
 /// The current generation of agents being evaluated in the simulation.
@@ -57,18 +122,11 @@ mod tests {
             num_outputs: 2,
             ..NeatConfig::default()
         };
-        Agent {
-            genotype: AgentGenotype::new("omega: B(1)".to_string(), &config, rng),
-            fitness: 0.0,
-            num_motors: 0,
-            root_entity: None,
-            body_entity: None,
-            cached_blueprint: None,
-            energy_consumed: 0.0,
-            displacement: 0.0,
-            avg_up_alignment: 0.0,
-            avg_height: 0.0,
-        }
+        Agent::fresh(
+            AgentGenotype::new("omega: B(1)".to_string(), &config, rng),
+            0,
+            None,
+        )
     }
 
     #[test]

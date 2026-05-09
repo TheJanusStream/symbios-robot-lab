@@ -49,14 +49,52 @@ pub fn render_robot_inspector(
                         ui.label("Displacement:");
                         ui.label(format!("{:.3}", agent.displacement));
                         ui.end_row();
-                        ui.label("Energy:");
-                        ui.label(format!("{:.1}", agent.energy_consumed));
-                        ui.end_row();
                         ui.label("Avg up-align:");
                         ui.label(format!("{:.3}", agent.avg_up_alignment));
                         ui.end_row();
+                        ui.label("Up-align stddev:");
+                        ui.label(format!("{:.3}", agent.up_alignment_stddev));
+                        ui.end_row();
                         ui.label("Avg height:");
                         ui.label(format!("{:.3}", agent.avg_height));
+                        ui.end_row();
+                        ui.label("CoM bounce (\u{03c3}_y):");
+                        ui.label(format!("{:.3}", agent.com_bounce));
+                        ui.end_row();
+                        ui.label("Avg velocity:");
+                        ui.label(format!("{:.3}", agent.avg_velocity));
+                        ui.end_row();
+                        ui.label("Action smoothness:");
+                        ui.label(format!("{:.3}", agent.action_smoothness));
+                        ui.end_row();
+                        ui.label("Control jerk:");
+                        ui.label(format!("{:.4}", agent.control_jerk));
+                        ui.end_row();
+                        ui.label("Body jerk:");
+                        ui.label(format!("{:.3}", agent.body_jerk));
+                        ui.end_row();
+                        ui.label("Support duty:");
+                        ui.label(format!("{:.3}", agent.support_duty_factor));
+                        ui.end_row();
+                        ui.label("Foot transitions/sensor:");
+                        ui.label(format!("{:.2}", agent.foot_transitions_per_sensor));
+                        ui.end_row();
+                        ui.label("Action intensity:");
+                        ui.label(format!("{:.3}", agent.action_intensity));
+                        ui.end_row();
+                        ui.label("Energy (cmd):");
+                        ui.label(format!("{:.1}", agent.energy_consumed));
+                        ui.end_row();
+                        ui.label("Mech work:");
+                        ui.label(format!("{:.1}", agent.mechanical_work));
+                        ui.end_row();
+                        ui.label("CoT:");
+                        let cot = agent.cost_of_transport;
+                        ui.label(if cot.is_finite() {
+                            format!("{cot:.2}")
+                        } else {
+                            "\u{221e}".to_string()
+                        });
                         ui.end_row();
                     });
             }

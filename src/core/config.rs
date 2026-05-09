@@ -53,6 +53,10 @@ pub struct LabConfig {
     pub auto_restart: bool,
     pub algorithm: GeneticAlgorithm,
     pub mutation_rate: f32,
+    /// Magnitude of a single sideways impulse (N·s) applied to each robot's
+    /// body roughly halfway through its evaluation window. Default 0.0 = off.
+    /// Non-zero values pressure controllers toward perturbation-robust gaits.
+    pub perturbation_strength: f32,
 }
 
 impl Default for LabConfig {
@@ -64,6 +68,7 @@ impl Default for LabConfig {
             auto_restart: true,
             algorithm: GeneticAlgorithm::default(),
             mutation_rate: 0.3,
+            perturbation_strength: 0.0,
         }
     }
 }

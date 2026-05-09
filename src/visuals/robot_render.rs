@@ -168,6 +168,7 @@ pub fn spawn_agents(
                         AgentTouch {
                             brain_entity: body_entity,
                             input_offset,
+                            prev_in_contact: false,
                         },
                         CollidingEntities::default(),
                     ));
@@ -224,6 +225,11 @@ pub fn spawn_agents(
         // Module entities excluding the body (first module) for explosion checks.
         let module_entities: Vec<Entity> = spawned.modules.iter().skip(1).copied().collect();
 
+        // Total mass of all modules — denominator of the Cost-of-Transport metric.
+        let total_mass: f32 = blueprint.modules.values().map(|m| m.mass).sum();
+        let driven_joint_count = joint_entities.len() + prismatic_entities.len();
+        let revolute_joint_count = joint_entities.len();
+
         // Attach brain to the body entity with pre-allocated sensor input buffer.
         commands.entity(body_entity).insert((
             RobotBrain {
@@ -234,9 +240,24 @@ pub fn spawn_agents(
                 joint_entities,
                 prismatic_entities,
                 module_entities,
+                total_mass,
+                touch_sensor_count: stats.num_touches as u16,
                 energy_consumed: 0.0,
+                mechanical_work: 0.0,
                 up_alignment_sum: 0.0,
+                up_alignment_sq_sum: 0.0,
                 height_sum: 0.0,
+                height_sq_sum: 0.0,
+                prev_target_velocities: vec![0.0; driven_joint_count],
+                prev_prev_target_velocities: vec![0.0; driven_joint_count],
+                prev_joint_angles: vec![0.0; revolute_joint_count],
+                action_smoothness_sum: 0.0,
+                control_jerk_sum: 0.0,
+                prev_body_lin_vel: Vec3::ZERO,
+                body_jerk_sum: 0.0,
+                touch_contact_ticks: 0,
+                foot_transition_count: 0,
+                perturbed: false,
                 metric_ticks: 0,
             },
             FitnessBaseline(None),

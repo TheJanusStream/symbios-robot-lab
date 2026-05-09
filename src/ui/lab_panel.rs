@@ -56,6 +56,15 @@ pub fn render_ui(
         );
         ui.add(egui::Slider::new(&mut config.population_size, 2..=100).text("Population Size"));
         ui.add(egui::Slider::new(&mut config.mutation_rate, 0.0..=1.0).text("Mutation Rate"));
+        ui.add(
+            egui::Slider::new(&mut config.perturbation_strength, 0.0..=200.0)
+                .text("Perturbation (N\u{00b7}s)"),
+        )
+        .on_hover_text(
+            "One sideways impulse applied to each robot at 60% of its post-settling window. \
+             0 = off. Higher values stress-test gait stability — winners will be \
+             perturbation-robust.",
+        );
         ui.checkbox(&mut config.auto_restart, "Auto-advance generations");
 
         if ui.button("Initialize Population").clicked() {
@@ -244,7 +253,7 @@ pub fn render_ui(
             let obj_data = parent_pool.objective_data();
             if obj_data.len() >= 2 {
                 ui.separator();
-                ui.label("Pareto front (fitness vs efficiency):");
+                ui.label("Pareto front (walker_fitness vs 1/(1+CoT)):");
 
                 let graph_width = ui.available_width();
                 let graph_height = 120.0;
@@ -396,7 +405,7 @@ pub fn render_ui(
             let res = parent_pool.archive_resolution().max(1);
             if !archive.is_empty() {
                 ui.separator();
-                ui.label("Archive grid (up-alignment vs avg-height):");
+                ui.label("Archive grid (support-duty vs action-intensity):");
 
                 let graph_size = ui.available_width().min(200.0);
                 let (rect, response) = ui
@@ -431,14 +440,14 @@ pub fn render_ui(
                 painter.text(
                     rect.right_bottom() + egui::vec2(-2.0, -2.0),
                     egui::Align2::RIGHT_BOTTOM,
-                    "up-align",
+                    "support-duty",
                     egui::FontId::proportional(9.0),
                     egui::Color32::from_gray(120),
                 );
                 painter.text(
                     rect.left_top() + egui::vec2(2.0, 2.0),
                     egui::Align2::LEFT_TOP,
-                    "height",
+                    "action-int",
                     egui::FontId::proportional(9.0),
                     egui::Color32::from_gray(120),
                 );
@@ -467,7 +476,7 @@ pub fn render_ui(
             && !centroids.is_empty()
         {
             ui.separator();
-            ui.label("CVT centroids (up-alignment vs avg-height):");
+            ui.label("CVT centroids (support-duty vs action-intensity):");
             let archive: std::collections::HashMap<usize, f32> =
                 parent_pool.cvt_archive_data().into_iter().collect();
 

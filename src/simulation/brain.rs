@@ -48,6 +48,13 @@ pub const ULTRASONIC_MAX_RANGE: f32 = 8.0;
 
 /// Holds the compiled NEAT network for a single agent, along with direct
 /// entity references to its sensors and joints for O(1) access.
+///
+/// Beyond the controller and sensor wiring, the brain owns the per-fixed-step
+/// metric accumulators consumed by [`crate::simulation::scoring`]. These cover
+/// energy / mechanical work, action smoothness, body jerk, orientation
+/// variance, periodic forward-progress sampling for R², and support-duty
+/// counting. All accumulators are filled by `track_metrics` and reset per
+/// generation when the agent respawns.
 #[derive(Component)]
 pub struct RobotBrain {
     pub evaluator: CppnEvaluator,
@@ -66,13 +73,77 @@ pub struct RobotBrain {
     pub prismatic_entities: Vec<Entity>,
     /// Module entities excluding the brain/body entity, for explosion checks.
     pub module_entities: Vec<Entity>,
-    /// Cumulative energy consumed: sum of |torque * angular_velocity| * dt.
+    /// Total mass of all modules (computed once at spawn from the blueprint).
+    /// Denominator of the Cost-of-Transport metric (`E / (m·g·d)`).
+    pub total_mass: f32,
+    /// Total touch sensors on this agent (denominator for support duty factor).
+    pub touch_sensor_count: u16,
+
+    // ── Energy / mechanical work ───────────────────────────────────────────
+    /// Coarse motor energy proxy: sum of `|τ_max · v_target| · dt` per joint.
+    /// Kept as the lab's historical "energy" channel; not the CoT numerator.
     pub energy_consumed: f32,
-    /// Running sum of root up-alignment (dot(local_up, world_up)) per tick.
+    /// Better mechanical-work approximation: sum of `|τ_max · Δθ|` from actual
+    /// joint-angle finite differences. Used for Cost-of-Transport.
+    pub mechanical_work: f32,
+
+    // ── Posture (mean + variance via Welford-style accumulators) ───────────
+    /// Sum of `dot(local_up, world_up)` per tick (mean = sum/ticks).
     pub up_alignment_sum: f32,
-    /// Running sum of root Y height per tick.
+    /// Sum of `up_alignment²` per tick — pairs with `up_alignment_sum` to
+    /// derive the population-variance estimator `E[X²] - E[X]²`.
+    pub up_alignment_sq_sum: f32,
+    /// Sum of body Y per tick (mean height = sum/ticks).
     pub height_sum: f32,
-    /// Number of ticks metrics have been tracked (for computing averages).
+
+    // ── Smoothness (per-joint Δv, ΔΔv, body Δv) ────────────────────────────
+    /// Per-driven-joint commanded velocity at the previous tracked tick.
+    /// Length = `joint_entities.len() + prismatic_entities.len()`.
+    /// First N entries are revolute (rad/s), then prismatic (m/s).
+    pub prev_target_velocities: Vec<f32>,
+    /// Per-driven-joint commanded velocity TWO tracked ticks ago. Used with
+    /// `prev_target_velocities` for the second-derivative anti-vibration term:
+    /// `Σ |a_t − 2·a_{t−1} + a_{t−2}|²`. Same length as `prev_target_velocities`.
+    pub prev_prev_target_velocities: Vec<f32>,
+    /// Per-revolute-joint angle at the previous tracked tick, used both for
+    /// mechanical-work estimation and to detect tracked-tick boundaries.
+    /// Length = `joint_entities.len()`.
+    pub prev_joint_angles: Vec<f32>,
+    /// Sum of squared per-tick Δ(target_velocity) across all joints.
+    /// Larger = more chattery control. `SmoothnessReward = 1 / (1 + mean)`.
+    pub action_smoothness_sum: f32,
+    /// Sum of squared per-tick Δ²(target_velocity) across all joints.
+    /// Catches sign-flipping vibration that a first-derivative penalty can
+    /// miss (a ±ε oscillation has small |Δv|=2ε but |ΔΔv|=4ε per tick).
+    /// `ControlJerkReward = 1 / (1 + mean / scale)`.
+    pub control_jerk_sum: f32,
+    /// Body LinearVelocity at the previous tracked tick.
+    pub prev_body_lin_vel: Vec3,
+    /// Sum of squared per-tick Δ(body_velocity). Approximates body jerk.
+    pub body_jerk_sum: f32,
+
+    // ── Body-Y oscillation (CoM bounce signature) ──────────────────────────
+    /// Sum of `body_y²` per tick. Pairs with `height_sum` to derive
+    /// `stddev(body_y)` via the population-variance estimator. Walking has
+    /// characteristic vertical bounce; vibrobots are flat.
+    pub height_sq_sum: f32,
+
+    // ── Support / step-cycle counters ──────────────────────────────────────
+    /// Sum of (touch sensors in contact) across all tracked ticks. Mean
+    /// support duty per tick = `touch_contact_ticks / (touch_sensor_count·ticks)`.
+    pub touch_contact_ticks: u32,
+    /// Total number of contact↔air transitions across all touch sensors,
+    /// summed over the eval window. Real walking cycles feet through air;
+    /// vibrobots have ~0 transitions.
+    pub foot_transition_count: u32,
+
+    // ── Robustness (perturbation injection) ────────────────────────────────
+    /// Once-per-agent flag flipped by `apply_perturbations` after the impulse
+    /// has been applied, so we don't re-perturb on every tick.
+    pub perturbed: bool,
+
+    // ── Bookkeeping ────────────────────────────────────────────────────────
+    /// Number of ticks metrics have been tracked (denominator for means).
     pub metric_ticks: u32,
 }
 
@@ -100,12 +171,18 @@ pub struct AgentImu {
 /// Touch contributes 1 input: 1.0 if in contact, 0.0 otherwise.
 ///
 /// `brain_entity` and `input_offset` enable cache-friendly linear iteration.
+/// `prev_in_contact` lets `track_metrics` count contact↔air transitions per
+/// foot — the signature of a real step cycle vs. a vibrating slide.
 #[derive(Component)]
 pub struct AgentTouch {
     /// Entity that holds this sensor's `RobotBrain`.
     pub brain_entity: Entity,
     /// Index in `RobotBrain.sensor_inputs` for this touch's value.
     pub input_offset: usize,
+    /// Contact state at the previous tracked tick. Initialised `false` at
+    /// spawn; the first tracked tick may register a spurious transition,
+    /// which is acceptable noise vs. the per-window total.
+    pub prev_in_contact: bool,
 }
 
 /// Number of clock inputs (sin(t), cos(t)).
