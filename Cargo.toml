@@ -8,11 +8,11 @@ bevy = { version = "0.18", features = ["file_watcher"] }
 bevy_egui = "0.39"
 bevy_panorbit_camera = { version = "0.34", features = ["bevy_egui"] }
 avian3d = "0.6"
-symbios = { path = "../symbios" }
-symbios-robot = { path = "../symbios-robot" }
-symbios-neat = { path = "../symbios-neat" }
-symbios-genetics = { path = "../symbios-genetics" }
-bevy_symbios = { path = "../bevy_symbios", features = ["egui", "robot", "asset-loader"] }
+symbios = "1.5"
+symbios-robot = "0.3"
+symbios-neat = "0.2"
+symbios-genetics = "0.2"
+bevy_symbios = { version = "0.4", features = ["egui", "robot", "asset-loader"] }
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 chrono = "0.4"
@@ -35,5 +35,12 @@ web-sys = { version = "0.3.82", features = [
     "ClipboardEvent",
     "Navigator",
 ] }
-wasm-bindgen = "0.2.114"
+wasm-bindgen = "0.2.121"
 js-sys = "0.3.82"
+
+[profile.release]
+opt-level = "s"   # Optimize for size (helps wasm-bindgen)
+lto = "fat"       # Enable full Link Time Optimization (CRITICAL FIX)
+codegen-units = 1 # Reduce parallelism to improve optimization quality
+strip = true      # Strip symbols to clean up the binary tables
+panic = "abort"   # Reduce binary size by removing stack unwinding
