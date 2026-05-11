@@ -3,18 +3,28 @@
 */
 /// Initial morphology pool for Generation 0.
 ///
-/// Each agent is assigned a random morphology from this pool, providing
-/// structural diversity for evolution to explore. The NEAT brain is sized
-/// dynamically to match each morphology's sensor/joint topology.
+/// Every entry is a credible legged walker: capsules to avoid snagging,
+/// touch sensors (`St`) on every foot (required for `FootAirTimeFactor` and
+/// `ComBounceReward` to score real step cycles), one IMU on the body
+/// (`Si`), and bounded recursion. Hinge limits keep joints from folding
+/// onto themselves; motor effort is sized to lift body weight.
 ///
-/// Key Improvements (v2):
-///   - Capsules (K) everywhere to prevent physics snagging.
-///   - High Torque (400+) to lift body weight.
-///   - Tighter joint limits (+/- 0.6) to prevent self-collision folding.
-///   - Alternating Axes (Pitch/Yaw) for snake/worm topologies.
+/// The five entries cover a deliberate range of body plans:
+///   1. Millipede   — long redundant body, many short legs (proven champion).
+///   2. Quadruped   — sphere body, four legs with stochastic leg-segment count.
+///   3. Hexapod     — sphere body, six deterministic hip+knee legs at 60°.
+///   4. Insect      — elongated rigid spine, three deterministic leg pairs.
+///   5. Crawler     — low-CoG sphere body, four short hip+knee legs.
+///
+/// Removed in this overhaul: Sidewinder (open-ended spine, unwalkable),
+/// Biped (no foot sensors, 2-leg balance too hard), Starfish (5-fold
+/// symmetric, no forward axis), Inchworm (prismatic demo, flat slide
+/// gated by `ComBounceReward`), Sentinel (stationary by design).
 pub const MORPHOLOGY_POOL: &[&str] = &[
-    // ── The Dominator (Millipede) ──────────────────────────────────────
-    // The current champion. High redundancy, low center of gravity, capsules.
+    // ── 1. Millipede ───────────────────────────────────────────────────
+    // The current champion. High redundancy, low center of gravity,
+    // capsules everywhere. Stochastic recursion (p1/p2/p3/p4 each 0.5)
+    // produces a chain of 4-6 body segments with paired side legs.
     "\
 #define headradius 0.6
 #define bodylength 1.6
@@ -43,16 +53,18 @@ p2 : M(bl, br, ha) -> M(bl, br, ha)
 p3 : LP(ha) -> LP(ha)
 p4 : LP(ha) -> [ Jf  &(90) C(1.0) ^(90) -(90) /(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St][ Jf  \\(180) &(90) C(1.0) ^(90) +(90) /(90) Jl(leg_min, leg_max, leg_eff, leg_vel) J K(leglength, legradius) K(leglength, legradius) St]",
 
-    // ── Quadruped (Upgraded) ───────────────────────────────────────────
-    // 4 legs. Upgraded to Capsules (K) and higher torque.
+    // ── 2. Quadruped ───────────────────────────────────────────────────
+    // Sphere body, four legs at 90° spacing. Stochastic leg-segment
+    // count (1/2/3 segments) gives intra-morphology variation while
+    // every leg ends with a touch sensor on the foot.
     "\
 #define hip_min -0.6
 #define hip_max 0.6
-#define hip_eff 2000
+#define hip_eff 3000
 #define hip_vel 5
 #define knee_min -0.8
 #define knee_max 0.8
-#define knee_eff 2000
+#define knee_eff 3000
 #define knee_vel 5
 #define lw 0.2
 #define seg 1.2
@@ -64,103 +76,72 @@ M -> /(90) Jl(hip_min, hip_max, hip_eff, hip_vel) J C(0.5) \\(90)
 0.4 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/2.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/2.0) St
 0.3 : L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg/3.0) St",
 
-    // ── Hexapod (Sprawler) ─────────────────────────────────────────────
-    // 6 legs. Wide stance ("Sprawler") to prevent rolling.
+    // ── 3. Hexapod (Sprawler v2) ───────────────────────────────────────
+    // Six deterministic legs at 60° spacing around the sphere body,
+    // each leg = hip stub + thigh + shin + touch foot. Anti-stochastic
+    // rewrite of the old Hexapod (which mixed 1- and 2-segment legs
+    // per draw and starved NEAT of consistent topology).
     "\
-#define jmin -0.6
-#define jmax 0.6
-#define eff 2000
-#define vel 6
-#define lw 0.15
-#define seg 1.0
-#define spread 70
-omega: !(0.6) O Si [ &(spread) L ] [ \\(60) &(spread) L ] [ \\(120) &(spread) L ] [ \\(180) &(spread) L ] [ /(120) &(spread) L ] [ /(60) &(spread) L ]
-0.3 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg) St
-0.7 : L -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg*0.6) Jl(jmin, jmax, eff, vel) J K(seg*0.6) St",
+#define hip_min -0.6
+#define hip_max 0.6
+#define hip_eff 3000
+#define hip_vel 5
+#define knee_min -0.8
+#define knee_max 0.8
+#define knee_eff 3000
+#define knee_vel 5
+#define lw 0.18
+#define seg 0.55
+#define la 45
+#define lb 90
+omega: !(0.5) O Si !(lw) [ &(lb) M ^(la) L ] [ \\(60) &(lb) M ^(la) L ] [ \\(120) &(lb) M ^(la) L ] [ \\(180) &(lb) M ^(la) L ] [ /(120) &(lb) M ^(la) L ] [ /(60) &(lb) M ^(la) L ]
+M -> /(90) Jl(hip_min, hip_max, hip_eff, hip_vel) J C(0.35) \\(90)
+L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) Jl(knee_min, knee_max, knee_eff, knee_vel) J K(seg) St",
 
-    // ── Sidewinder (Snake V2) ──────────────────────────────────────────
-    // IMPROVEMENT: Alternating Pitch (&) and Yaw (+) joints.
-    // A 1D hinge chain can only flop. A 2D hinge chain (Pitch+Yaw) can slither.
-    // Added 'Ribs' (Fixed spurs) to provide friction anisotropy.
+    // ── 4. Insect (Tripod Walker) ──────────────────────────────────────
+    // Three-segment horizontal body with three deterministic leg pairs
+    // along its length (6 legs total). Body axis is set horizontal by
+    // `+(90)` in omega (same trick the Millipede uses); the LP rule
+    // uses the Millipede's hip-rotation incantation so legs splay
+    // perpendicular to the body and bend downward. Each leg has a
+    // knee (hip + thigh + shin) for a 2-DOF substrate — meaningfully
+    // distinct from Millipede's fixed-stack 1-DOF legs.
     "\
-#define jmin -0.8
-#define jmax 0.8
-#define eff 2000
-#define vel 8
-#define seg 0.5
-#define rad 0.35
-omega: !(rad) O Si St Spine
-// Recursive spine with alternating axes
-Spine -> Jl(jmin, jmax, eff, vel) J K(seg) Ribs +(90) Jl(jmin, jmax, eff, vel) J K(seg) Ribs -(90) Spine
-// Spurs to catch the ground
-Ribs -> [ Jf +(90) K(0.2, 0.1) ] [ Jf -(90) K(0.2, 0.1) ]",
+#define rad 0.3
+#define seg 0.7
+#define hip 0.3
+#define lw 0.18
+#define leg 0.45
+#define hipmin -0.6
+#define hipmax 0.6
+#define knee_min -0.7
+#define knee_max 0.3
+#define eff 3000
+#define vel 5
+omega: O(rad) Si +(90) LP Jl(hipmin, hipmax, eff, vel) J K(seg, rad) LP Jl(hipmin, hipmax, eff, vel) J K(seg, rad) LP
+LP -> [ Jf &(90) C(hip) ^(90) -(90) /(90) Jl(hipmin, hipmax, eff, vel) J K(leg, lw) Jl(knee_min, knee_max, eff, vel) J K(leg, lw) St ] [ Jf \\(180) &(90) C(hip) ^(90) +(90) /(90) Jl(hipmin, hipmax, eff, vel) J K(leg, lw) Jl(knee_min, knee_max, eff, vel) J K(leg, lw) St ]",
 
-    // ── Biped (Snowshoe) ───────────────────────────────────────────────
-    // IMPROVEMENT: Massive feet (Foot) to lower the balance difficulty.
-    // High torque (600) to lift the heavy upper body.
+    // ── 5. Crawler (Low Rider) ─────────────────────────────────────────
+    // Quadruped body plan with short legs and a small body — the
+    // lowest center-of-gravity walker in the pool. Knees bend mostly
+    // inward (knee_max small, knee_min large negative) so the foot
+    // settles under the hip. Easy for NEAT to evolve because wide
+    // stance + low CoG keeps the body stable through early random
+    // gaits.
     "\
-#define hip_min -0.8
-#define hip_max 0.8
-#define eff 2000
-#define vel 4
+#define hip_min -0.5
+#define hip_max 0.5
+#define hip_eff 3000
+#define hip_vel 5
 #define knee_min -1.0
 #define knee_max 0.2
-#define keff 2000
-#define kvel 4
-#define lw 0.25
-#define seg 0.7
-// Wide hips (45 deg spread)
-omega: !(0.6) O Si [ &(45) Leg ] [ ^(45) Leg ]
-Leg -> Jl(hip_min, hip_max, eff, vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, kvel) J K(seg) Foot
-// Large flat foot for stability
-Foot -> Jf !(0.1) [ +(90) K(0.6) ] [ -(90) K(0.6) ] St",
-
-    // ── Starfish (Crawler) ─────────────────────────────────────────────
-    // 5 arms with 'Elbows' to allow crawling motion (pulling) rather than just flapping.
-    "\
-#define jmin -0.7
-#define jmax 0.7
-#define eff 2000
-#define vel 5
-#define seg 0.6
-omega: !(0.8) O Si [ &(90) Arm ] [ \\(72) &(90) Arm ] [ \\(144) &(90) Arm ] [ /(144) &(90) Arm ] [ /(72) &(90) Arm ]
-// Two-segment arm allows 'pulling' the body forward
-Arm -> Jl(jmin, jmax, eff, vel) J K(seg) Jl(jmin, jmax, eff, vel) J K(seg) St",
-
-    // ── Inchworm (Telescoping) ─────────────────────────────────────────
-    // Demonstrates prismatic (slider) joints from the symbios-robot 0.3.0
-    // upstream. Two body segments connected by Jp drive a periodic
-    // extend/retract motion; hinges at the ends bend the body. The brain
-    // gets 1 hinge output then 1 prismatic output (axis-Y stroke).
-    "\
-#define jmin -0.6
-#define jmax 0.6
-#define eff 2500
-#define vel 3
-#define pmin -0.5
-#define pmax 0.5
-#define peff 5000
-#define pvel 2
-omega: !(0.4) O Si Body
-Body -> [ Jl(jmin, jmax, eff, vel) J K(0.8) ]\
-        Ja(0,1,0) Jl(pmin, pmax, peff, pvel) Jp K(0.4)\
-        [ Jl(jmin, jmax, eff, vel) J K(0.8) St ]",
-
-    // ── Sentinel (Sensor Tower) ────────────────────────────────────────
-    // Demonstrates ultrasonic sensors (Su) and end-effector pinning (E)
-    // from symbios-robot 0.3.0. Stationary armature: a tall body with
-    // four ultrasonic sensors aimed outward and EEs at each arm tip,
-    // useful as a substrate for evolved scanning behaviours.
-    "\
-#define jmin -0.9
-#define jmax 0.9
-#define eff 1500
-#define vel 4
-#define seg 0.6
-omega: !(0.5) O Si\
-       [ &(60) Arm(1) ]\
-       [ \\(90) &(60) Arm(2) ]\
-       [ \\(180) &(60) Arm(3) ]\
-       [ /(90) &(60) Arm(4) ]
-Arm(id) -> Jl(jmin, jmax, eff, vel) J K(seg) Su Jl(jmin, jmax, eff, vel) J K(seg) Su E(id) St",
+#define keff 3000
+#define kvel 5
+#define lw 0.2
+#define seg 0.4
+#define la 55
+#define lb 90
+omega: !(0.45) O Si !(lw) [ &(lb) M ^(la) L ] [ \\(90) &(lb) M ^(la) L ] [ \\(180) &(lb) M ^(la) L ] [ /(90) &(lb) M ^(la) L ]
+M -> /(90) Jl(hip_min, hip_max, hip_eff, hip_vel) J C(0.3) \\(90)
+L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, kvel) J K(seg) St",
 ];

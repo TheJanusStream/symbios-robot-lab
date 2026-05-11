@@ -116,43 +116,52 @@ fn ultrasonic_sensor_mounts_on_current_module() {
 }
 
 #[test]
-fn new_inchworm_preset_compiles_with_prismatic() {
-    // The hot-added Inchworm preset (3rd from end) exercises Jp; verify it
-    // parses and produces at least one prismatic joint.
-    let inchworm = MORPHOLOGY_POOL[MORPHOLOGY_POOL.len() - 2];
-    let bp = build_blueprint_from_source(inchworm);
-    let prismatics = bp
-        .joints
-        .iter()
-        .filter(|j| matches!(j.joint_type, JointType::Prismatic { .. }))
-        .count();
-    assert!(
-        prismatics >= 1,
-        "Inchworm preset should produce >= 1 prismatic joint, got {}",
-        prismatics
-    );
+fn every_preset_parses_and_has_a_walker_topology() {
+    // After the v0.2 preset overhaul, every entry must be a credible
+    // legged walker: parses, spawns ≥ 2 modules and ≥ 1 hinge joint,
+    // mounts an IMU on the body, and ends every foot with a touch
+    // sensor. Touch sensors are required for `FootAirTimeFactor` and
+    // `ComBounceReward` to score real step cycles; a preset without
+    // them slips past the anti-vibrobot fitness terms.
+    use symbios_robot::SensorType;
+    for (idx, source) in MORPHOLOGY_POOL.iter().enumerate() {
+        let bp = build_blueprint_from_source(source);
+        assert!(
+            bp.modules.len() >= 2,
+            "preset[{idx}] produced only {} module(s)",
+            bp.modules.len()
+        );
+        assert!(
+            count_hinge_joints(&bp) >= 1,
+            "preset[{idx}] produced no hinge joints",
+        );
+        let imus = bp
+            .modules
+            .values()
+            .flat_map(|m| m.sensors.iter())
+            .filter(|s| matches!(s.sensor_type, SensorType::IMU))
+            .count();
+        assert!(imus >= 1, "preset[{idx}] has no IMU sensor (Si)");
+        let touches = bp
+            .modules
+            .values()
+            .flat_map(|m| m.sensors.iter())
+            .filter(|s| matches!(s.sensor_type, SensorType::Touch))
+            .count();
+        assert!(
+            touches >= 2,
+            "preset[{idx}] has {touches} touch sensors (St); every foot must have one",
+        );
+    }
 }
 
 #[test]
-fn new_sentinel_preset_emits_ultrasonic_and_ee() {
-    use symbios_robot::SensorType;
-    let sentinel = MORPHOLOGY_POOL[MORPHOLOGY_POOL.len() - 1];
-    let bp = build_blueprint_from_source(sentinel);
-    let ultras = bp
-        .modules
-        .values()
-        .flat_map(|m| m.sensors.iter())
-        .filter(|s| matches!(s.sensor_type, SensorType::Ultrasonic))
-        .count();
-    assert!(
-        ultras >= 4,
-        "Sentinel preset should mount >= 4 ultrasonic sensors, got {}",
-        ultras
-    );
-    assert!(
-        !bp.end_effectors.is_empty(),
-        "Sentinel preset should declare end-effectors"
-    );
+fn preset_pool_holds_five_walkers() {
+    // Lock the pool size — Sentinel/Inchworm/Snake/Biped/Starfish were
+    // removed in the v0.2 overhaul because they couldn't win against
+    // the anti-vibrobot fitness. Reverting that would silently let
+    // them back in; this test fails if the count drifts.
+    assert_eq!(MORPHOLOGY_POOL.len(), 5);
 }
 
 #[test]
