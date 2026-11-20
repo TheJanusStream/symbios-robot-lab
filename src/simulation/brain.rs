@@ -1,10 +1,12 @@
-//! The brain: one feed-forward network per robot, evaluated from its sensor
-//! inputs, whose outputs drive the robot's joint motors.
+//! The brain: one controller per robot (a feed-forward network evaluated
+//! from its sensor inputs, or pattern generators restarted by its feet),
+//! whose outputs drive the robot's joint motors.
 
-use crate::core::config::{BrainEncoding, Task};
+use crate::core::config::{BrainEncoding, Senses};
 use crate::core::genome::AgentGenotype;
 use crate::simulation::clock::GenerationClock;
 use crate::simulation::hyperneat::{CPPN_INPUTS, CPPN_OUTPUTS, Substrate, paint_brain};
+use crate::simulation::supg::{SUPG_INPUTS, SUPG_OUTPUTS, SupgBrain};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use symbios_neat::{CppnEvaluator, EvaluatorError, FeedforwardNetwork, Scratchpad};
@@ -65,18 +67,22 @@ impl DrivenJoint {
 pub enum BrainError {
     /// The controller genome (a direct brain or a CPPN) has a cycle.
     Cyclic,
-    /// A HyperNEAT controller is not shaped like the lab's CPPN.
-    CppnShape { inputs: usize, outputs: usize },
+    /// A CPPN controller (HyperNEAT or pattern generators) is not shaped like
+    /// the lab's: it `needs` some (inputs, outputs) and `has` others.
+    CppnShape {
+        needs: (usize, usize),
+        has: (usize, usize),
+    },
 }
 
 impl std::fmt::Display for BrainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BrainError::Cyclic => f.write_str("the brain's genome has a cycle"),
-            BrainError::CppnShape { inputs, outputs } => write!(
+            BrainError::CppnShape { needs, has } => write!(
                 f,
-                "a HyperNEAT CPPN needs {CPPN_INPUTS} inputs and {CPPN_OUTPUTS} outputs, \
-                 this one has {inputs} and {outputs}"
+                "the brain's CPPN needs {} inputs and {} outputs, this one has {} and {}",
+                needs.0, needs.1, has.0, has.1
             ),
         }
     }
@@ -90,35 +96,110 @@ impl From<EvaluatorError> for BrainError {
     }
 }
 
-/// The network that drives `blueprint`'s body at `task`: the controller
-/// itself for a direct encoding (sized for the task when it was bred), the
-/// network its CPPN paints onto the body, with the task's inputs, for
-/// HyperNEAT.
+/// What turns a robot's senses into its joints' targets.
+pub enum Controller {
+    /// A feed-forward network reading the senses: the genome itself (direct
+    /// NEAT) or painted from it onto the body (HyperNEAT).
+    Network {
+        network: FeedforwardNetwork,
+        scratchpad: Scratchpad,
+    },
+    /// Pattern generators, one per driven joint, restarted by the feet (see
+    /// [`crate::simulation::supg`]).
+    Patterns(SupgBrain),
+}
+
+impl Controller {
+    pub fn network(network: FeedforwardNetwork) -> Self {
+        let scratchpad = network.create_scratchpad();
+        Self::Network {
+            network,
+            scratchpad,
+        }
+    }
+
+    /// Outputs per evaluation: one per driven joint.
+    pub fn num_outputs(&self) -> usize {
+        match self {
+            Self::Network { network, .. } => network.num_outputs(),
+            Self::Patterns(patterns) => patterns.num_joints(),
+        }
+    }
+
+    /// The senses a network reads; `None` for pattern generators, which
+    /// read only the touch sensors, wherever the input layout puts them.
+    pub fn num_inputs(&self) -> Option<usize> {
+        match self {
+            Self::Network { network, .. } => Some(network.num_inputs()),
+            Self::Patterns(_) => None,
+        }
+    }
+}
+
+/// The controller that drives `blueprint`'s body with `senses`: the genome
+/// itself for a direct encoding (sized for them when it was bred), the
+/// network its CPPN paints onto the body, with their inputs, for HyperNEAT,
+/// and the pattern generators its CPPN paints on the body's joints for
+/// pattern generators.
 pub fn compile_brain(
     genotype: &AgentGenotype,
     blueprint: &RobotBlueprint,
-    task: Task,
-) -> Result<FeedforwardNetwork, BrainError> {
+    senses: Senses,
+) -> Result<Controller, BrainError> {
     let mut genome = genotype.controller.clone();
     genome.break_cycles();
     let compiled = CppnEvaluator::new(&genome)?;
-    match genotype.encoding {
-        BrainEncoding::Direct => Ok(compiled.network().clone()),
-        BrainEncoding::HyperNeat => {
-            let (inputs, outputs) = (compiled.num_inputs(), compiled.num_outputs());
-            if (inputs, outputs) != (CPPN_INPUTS, CPPN_OUTPUTS) {
-                return Err(BrainError::CppnShape { inputs, outputs });
-            }
-            Ok(paint_brain(&compiled, &Substrate::of_body(blueprint, task)))
+    let shaped = |needs: (usize, usize)| {
+        let has = (compiled.num_inputs(), compiled.num_outputs());
+        if has == needs {
+            Ok(())
+        } else {
+            Err(BrainError::CppnShape { needs, has })
         }
+    };
+    match genotype.encoding {
+        BrainEncoding::Direct => Ok(Controller::network(compiled.network().clone())),
+        BrainEncoding::HyperNeat => {
+            shaped((CPPN_INPUTS, CPPN_OUTPUTS))?;
+            let network = paint_brain(&compiled, &Substrate::of_body(blueprint, senses));
+            Ok(Controller::network(network))
+        }
+        BrainEncoding::Supg => {
+            shaped((SUPG_INPUTS, SUPG_OUTPUTS))?;
+            Ok(Controller::Patterns(SupgBrain::new(compiled, blueprint)))
+        }
+    }
+}
+
+/// A target-task robot's steering reflex (Lan et al. 2020): each driven
+/// joint's output is scaled by `1 + gain x side x turn`, within `[0, 2]`, so
+/// the joints on one side of the body swing shorter than the other's and
+/// the robot turns. The brain still reads the bearing and can steer on its
+/// own; the reflex gives every body, whatever its shape, a way to turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Steering {
+    /// The evolved gain ([`AgentGenotype::steering_gain`]).
+    pub gain: f32,
+    /// Each driven joint's side of the body, -1 to 1, in output order (see
+    /// [`crate::simulation::hyperneat::joint_sides`]).
+    pub sides: Vec<f32>,
+    /// Where the target lies: its bearing over pi, -1 to 1, 0 straight
+    /// ahead. Updated with the senses.
+    pub turn: f32,
+}
+
+impl Steering {
+    /// The scale on driven joint `index`'s output.
+    pub fn scale(&self, index: usize) -> f32 {
+        let side = self.sides.get(index).copied().unwrap_or(0.0);
+        (1.0 + self.gain * side * self.turn).clamp(0.0, 2.0)
     }
 }
 
 /// A robot's controller and the joints it drives. Lives on the body part.
 #[derive(Component)]
 pub struct RobotBrain {
-    pub network: FeedforwardNetwork,
-    pub scratchpad: Scratchpad,
+    pub controller: Controller,
     pub agent_index: usize,
     /// Inputs, filled every fixed step by `gather_sensor_inputs` in the
     /// layout of [`crate::simulation::sensors::InputLayout`].
@@ -133,6 +214,10 @@ pub struct RobotBrain {
     pub parts: Vec<Entity>,
     /// Frequency (Hz) of the clock this brain reads, from the genotype.
     pub rhythm_hz: f32,
+    /// The steering reflex of a robot walking to targets.
+    pub steering: Option<Steering>,
+    /// Where the brain reads its body's tilt, with the tilt sense.
+    pub tilt_input: Option<usize>,
 }
 
 impl RobotBrain {
@@ -232,16 +317,35 @@ pub fn drive_motors(
     }
     for mut brain in &mut brains {
         let RobotBrain {
-            network,
-            scratchpad,
+            controller,
             sensor_inputs,
             outputs,
             hinge_joints,
             prismatic_joints,
+            steering,
+            rhythm_hz,
             ..
         } = &mut *brain;
-        outputs.resize(network.num_outputs(), 0.0);
-        network.evaluate_into(sensor_inputs, outputs, scratchpad);
+        outputs.resize(controller.num_outputs(), 0.0);
+        match controller {
+            Controller::Network {
+                network,
+                scratchpad,
+            } => network.evaluate_into(sensor_inputs, outputs, scratchpad),
+            Controller::Patterns(patterns) => {
+                patterns.evaluate(sensor_inputs, clock.elapsed_secs(), *rhythm_hz, outputs);
+            }
+        }
+        if let Some(steering) = steering {
+            for (i, output) in outputs.iter_mut().enumerate() {
+                *output *= steering.scale(i);
+            }
+        }
+        // What the motors carry out (and so what the metrics judge): the
+        // steering reflex can push an output past the range's ends.
+        for output in outputs.iter_mut() {
+            *output = output.clamp(-1.0, 1.0);
+        }
 
         for (driven, &output) in hinge_joints.iter().zip(outputs.iter()) {
             if let Ok(mut joint) = hinges.get_mut(driven.entity) {
@@ -260,5 +364,30 @@ pub fn drive_motors(
                 joint.motor.enabled = !driven.broken;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_steering_reflex_shortens_one_side() {
+        let steering = Steering {
+            gain: -1.0,
+            sides: vec![1.0, -1.0, 0.0],
+            turn: 0.5,
+        };
+        // Target to the positive side: that side's joints swing shorter.
+        assert_eq!(steering.scale(0), 0.5);
+        assert_eq!(steering.scale(1), 1.5);
+        assert_eq!(steering.scale(2), 1.0);
+        assert_eq!(steering.scale(9), 1.0);
+        let strong = Steering {
+            gain: 2.0,
+            turn: 1.0,
+            ..steering
+        };
+        assert_eq!((strong.scale(0), strong.scale(1)), (2.0, 0.0));
     }
 }

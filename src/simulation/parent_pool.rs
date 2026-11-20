@@ -73,6 +73,10 @@ pub struct ParentPool {
     /// The descriptor space of the last merge, which the archives are laid
     /// out in.
     space: QdDescriptor,
+    /// How many walks each member's scores average, by robot identity
+    /// ([`AgentGenotype::id`]): 1 when it joins, one more each time it walks
+    /// again.
+    walks: BTreeMap<u64, u32>,
 }
 
 impl ParentPool {
@@ -225,6 +229,73 @@ impl ParentPool {
         self.cvt_archive.clear();
         self.novelty_archive.clear();
         self.novelty_scores.clear();
+        self.walks.clear();
+    }
+
+    /// How many walks the member with identity `id` has made (0 if it is not
+    /// in the pool).
+    pub fn walks_of(&self, id: u64) -> u32 {
+        self.walks.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The fittest walking member, with how many walks its scores average.
+    pub fn best(&self) -> Option<(&Phenotype<AgentGenotype>, u32)> {
+        self.pool
+            .iter()
+            .filter(|p| is_viable(p))
+            .max_by(|a, b| a.fitness.total_cmp(&b.fitness))
+            .map(|p| (p, self.walks_of(p.genotype.id).max(1)))
+    }
+
+    /// The parents to walk again next generation: the `count` best walking
+    /// members by average fitness.
+    pub fn retest_candidates(&self, count: usize) -> Vec<AgentGenotype> {
+        let mut walking: Vec<&Phenotype<AgentGenotype>> =
+            self.pool.iter().filter(|p| is_viable(p)).collect();
+        walking.sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
+        walking
+            .into_iter()
+            .take(count)
+            .map(|p| p.genotype.clone())
+            .collect()
+    }
+
+    /// Adds a parent's new walk to its average: fitness and the scored
+    /// objectives become the mean over its walks, a failed walk (exploded,
+    /// too few motors, no progress) counting as 0. The descriptor stays as
+    /// first measured, so archive cells keep their elites. The parent becomes
+    /// the robot that walked: the same one, unless the task or senses changed
+    /// since it was bred and its clone was fitted to them (a steering gain
+    /// given, a direct brain resized), and it breeds and walks on as fitted.
+    /// Returns the parent's new average fitness and walk count, or `None` if
+    /// the walker has no identity or no member has it (the pool changed: a
+    /// restart).
+    pub fn retest(&mut self, walk: &Phenotype<AgentGenotype>) -> Option<(f32, u32)> {
+        let id = walk.genotype.id;
+        if id == 0 {
+            return None;
+        }
+        let member = self.pool.iter_mut().find(|p| p.genotype.id == id)?;
+        let walks = self.walks.entry(id).or_insert(1);
+        let n = *walks as f32;
+        let (fitness, objectives) = if is_viable(walk) {
+            (walk.fitness, walk.objectives.clone())
+        } else {
+            (0.0, vec![0.0; NUM_OBJECTIVES])
+        };
+        member.fitness = (member.fitness * n + fitness) / (n + 1.0);
+        for (i, mean) in member
+            .objectives
+            .iter_mut()
+            .take(NUM_OBJECTIVES)
+            .enumerate()
+        {
+            let new = objectives.get(i).copied().unwrap_or(0.0);
+            *mean = (*mean * n + new) / (n + 1.0);
+        }
+        member.genotype = walk.genotype.clone();
+        *walks += 1;
+        Some((member.fitness, *walks))
     }
 
     /// Exports the current quality-diversity archive (grid MAP-Elites or CVT)
@@ -263,10 +334,11 @@ impl ParentPool {
         Ok(rows)
     }
 
-    /// Merges a generation's evaluated individuals into the pool with the
-    /// configured algorithm, keeping at most the population size where the
-    /// algorithm caps. The bodies already in the pool grow a generation older
-    /// first.
+    /// Merges a generation's evaluated newcomers into the pool with the
+    /// configured algorithm, keeping at most [`LabConfig::parents`] where
+    /// the algorithm caps. The bodies already in the pool grow a generation
+    /// older first. Parents that walked again join through
+    /// [`Self::retest`], before the merge.
     ///
     /// Only the selecting algorithm keeps its archive. A grid or CVT archive
     /// whose algorithm takes over, or whose descriptor space changed, is laid
@@ -281,7 +353,7 @@ impl ParentPool {
         for pheno in &mut self.pool {
             pheno.genotype.body_age = pheno.genotype.body_age.saturating_add(1);
         }
-        let (algorithm, cap, space) = (config.algorithm, config.population_size, config.descriptor);
+        let (algorithm, cap, space) = (config.algorithm, config.parents(), config.descriptor);
         if algorithm != GeneticAlgorithm::MapElites {
             self.archive.clear();
         }
@@ -302,6 +374,12 @@ impl ParentPool {
             GeneticAlgorithm::DominatedNovelty => self.update_dns(evaluated, cap, space),
         }
         self.space = space;
+        // Newcomers have walked once; the departed are forgotten.
+        let ids: BTreeSet<u64> = self.pool.iter().map(|p| p.genotype.id).collect();
+        self.walks.retain(|id, _| ids.contains(id));
+        for id in ids {
+            self.walks.entry(id).or_insert(1);
+        }
     }
 
     /// One offspring of two parents selected by the configured algorithm
@@ -839,10 +917,13 @@ mod tests {
         pheno
     }
 
+    /// A configuration whose fixed-size pools keep `cap` parents: a
+    /// population of `cap`, all kept.
     fn config(algorithm: GeneticAlgorithm, cap: usize) -> LabConfig {
         LabConfig {
             algorithm,
             population_size: cap,
+            parent_share: 1.0,
             ..LabConfig::default()
         }
     }
@@ -897,6 +978,90 @@ mod tests {
             (plot[0].fitness, plot[0].efficiency, plot[0].front),
             (0.6, 0.5, 0)
         );
+    }
+
+    /// A parent's walks average: fitness and objectives become the mean,
+    /// a failed walk counting as 0, while the descriptor stays put.
+    #[test]
+    fn a_parent_walking_again_joins_its_average() {
+        let mut rng = Pcg64::seed_from_u64(16);
+        let mut batch = scored(&[(1.2, 0.6), (0.4, 0.2)], &mut rng);
+        batch[0].genotype.id = 7;
+        batch[1].genotype.id = 8;
+        let mut pool = ParentPool::default();
+        let config = config(GeneticAlgorithm::Nsga2, 8);
+        pool.merge(&config, batch.clone(), &mut rng);
+        assert_eq!((pool.walks_of(7), pool.walks_of(8)), (1, 1));
+
+        let mut walk = batch[0].clone();
+        walk.fitness = 0.6;
+        walk.objectives = vec![0.6, 0.4];
+        walk.descriptor = vec![0.9; walk.descriptor.len()];
+        let close = |got: Option<(f32, u32)>, fitness: f32, walks: u32| {
+            got.is_some_and(|(f, w)| (f - fitness).abs() < 1e-5 && w == walks)
+        };
+        // Its clone was fitted to a new task on the way (a steering gain).
+        walk.genotype.steering_gain = 0.75;
+        assert!(close(pool.retest(&walk), 0.9, 2));
+        let member = pool.pool.iter().find(|p| p.genotype.id == 7).unwrap();
+        assert!((member.objectives[1] - 0.5).abs() < 1e-6);
+        assert_eq!(member.descriptor, batch[0].descriptor);
+        assert_eq!(
+            member.genotype.steering_gain, 0.75,
+            "the parent is not the robot that walked"
+        );
+
+        // An exploded walk counts as 0.
+        let mut failed = batch[0].clone();
+        failed.fitness = f32::MIN;
+        failed.objectives = vec![f32::MIN; NUM_OBJECTIVES];
+        assert!(close(pool.retest(&failed), 0.6, 3));
+        // Robots without an identity, or not in the pool, are not matched.
+        let mut stranger = batch[1].clone();
+        stranger.genotype.id = 99;
+        assert_eq!(pool.retest(&stranger), None);
+        stranger.genotype.id = 0;
+        assert_eq!(pool.retest(&stranger), None);
+
+        // Walk counts survive merges and are forgotten with their robot.
+        pool.merge(&config, Vec::new(), &mut rng);
+        assert_eq!(pool.walks_of(7), 3);
+        pool.clear();
+        assert_eq!(pool.walks_of(7), 0);
+    }
+
+    /// The best walking parents by average walk again; failed ones never.
+    #[test]
+    fn the_best_walking_parents_are_the_ones_to_walk_again() {
+        let mut rng = Pcg64::seed_from_u64(17);
+        let mut batch = scored(&[(0.3, 0.5), (0.9, 0.1), (0.6, 0.6)], &mut rng);
+        batch.push(failed(&mut rng));
+        for (i, p) in batch.iter_mut().enumerate() {
+            p.genotype.id = i as u64 + 1;
+        }
+        let mut pool = ParentPool::default();
+        pool.merge(&config(GeneticAlgorithm::Nsga2, 8), batch, &mut rng);
+        let ids =
+            |count| -> Vec<u64> { pool.retest_candidates(count).iter().map(|g| g.id).collect() };
+        assert_eq!(ids(2), vec![2, 3]);
+        assert_eq!(ids(10), vec![2, 3, 1]);
+    }
+
+    /// The pool keeps the parent share of the population.
+    #[test]
+    fn the_pool_keeps_the_parent_share() {
+        let mut rng = Pcg64::seed_from_u64(18);
+        let batch: Vec<_> = (0..10)
+            .map(|i| phenotype(i as f32 / 10.0, [0.5, 0.5], &mut rng))
+            .collect();
+        let half = LabConfig {
+            parent_share: 0.5,
+            ..config(GeneticAlgorithm::SimpleGA, 10)
+        };
+        let mut pool = ParentPool::default();
+        pool.merge(&half, batch, &mut rng);
+        assert_eq!(pool.len(), 5);
+        assert!((pool.best_fitness() - 0.9).abs() < 1e-6);
     }
 
     #[test]

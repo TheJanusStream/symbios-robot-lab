@@ -3,13 +3,13 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use symbios_robot_lab::core::config::BrainEncoding;
 use symbios_robot_lab::core::population::Population;
-use symbios_robot_lab::simulation::brain::RobotBrain;
+use symbios_robot_lab::simulation::brain::{Controller, RobotBrain};
 use symbios_robot_lab::simulation::metrics::AgentMetrics;
 use symbios_robot_lab::simulation::sensors::{
     AgentImu, AgentJoint, AgentSlider, AgentTouch, AgentUltrasonic, INPUTS_PER_IMU, InputLayout,
     NUM_CLOCK_INPUTS,
 };
-use symbios_robot_lab::simulation::spawn::SHOWCASE_INDEX;
+use symbios_robot_lab::simulation::spawn::is_showcase;
 use symbios_robot_lab::simulation::target::WalkTarget;
 
 /// Renders an inspector window for the currently selected robot.
@@ -45,7 +45,7 @@ pub fn render_robot_inspector(
         return;
     };
 
-    let title = if agent_index == SHOWCASE_INDEX {
+    let title = if is_showcase(agent_index) {
         "Showcase".to_string()
     } else {
         format!("Agent {agent_index}")
@@ -187,7 +187,8 @@ pub fn render_robot_inspector(
                     .iter()
                     .filter(|s| s.brain_entity == brain_entity)
                     .count(),
-                steering: targets.contains(brain_entity),
+                bearing: targets.contains(brain_entity),
+                tilt: brain.tilt_input.is_some(),
             };
             let (num_imus, num_touches, num_ultrasonics, num_joints) = (
                 layout.imus,
@@ -223,9 +224,10 @@ pub fn render_robot_inspector(
                         ui.label("Brain:");
                         ui.label(genotype.encoding.label());
                         ui.end_row();
-                        if genotype.encoding == BrainEncoding::HyperNeat {
+                        if genotype.encoding != BrainEncoding::Direct {
                             ui.label("CPPN:").on_hover_text(
-                                "The evolved pattern generator that paints this robot's network",
+                                "The evolved pattern-producing network that paints this robot's \
+                                 brain (its network, or its joints' patterns)",
                             );
                             ui.label(format!(
                                 "{} nodes, {} links",
@@ -240,17 +242,43 @@ pub fn render_robot_inspector(
                     );
                     ui.label(format!("{:.2} Hz", brain.rhythm_hz));
                     ui.end_row();
+                    if let Some(steering) = &brain.steering {
+                        ui.label("Steering:").on_hover_text(
+                            "The evolved steering reflex: how strongly the joints on one side \
+                             swing shorter to turn toward the target, and which side",
+                        );
+                        ui.label(format!(
+                            "gain {:+.2}, turning {:+.2}",
+                            steering.gain, steering.turn
+                        ));
+                        ui.end_row();
+                    }
                     ui.label("Inputs:");
                     ui.label(format!("{}", brain.sensor_inputs.len()));
                     ui.end_row();
                     ui.label("Outputs:");
                     ui.label(format!("{}", num_joints + num_prismatics));
                     ui.end_row();
-                    ui.label("Links:").on_hover_text(
-                        "Weighted connections in the network (for HyperNEAT, how many of the \
-                         candidate links its CPPN expressed)",
-                    );
-                    ui.label(format!("{}", brain.network.num_connections()));
+                    match &brain.controller {
+                        Controller::Network { network, .. } => {
+                            ui.label("Links:").on_hover_text(
+                                "Weighted connections in the network (for HyperNEAT, how many \
+                                 of the candidate links its CPPN expressed)",
+                            );
+                            ui.label(format!("{}", network.num_connections()));
+                        }
+                        Controller::Patterns(patterns) => {
+                            ui.label("Patterns:").on_hover_text(
+                                "One pattern per driven joint; a leg's patterns restart \
+                                 whenever its foot touches down",
+                            );
+                            ui.label(format!(
+                                "{} joints, {} legs listening",
+                                patterns.num_joints(),
+                                patterns.num_listening_legs()
+                            ));
+                        }
+                    }
                     ui.end_row();
                     ui.label("IMUs:");
                     ui.label(format!("{num_imus}"));
@@ -324,7 +352,12 @@ pub fn render_robot_inspector(
                             for i in 0..layout.sliders {
                                 row(ui, format!("slider{i}.extension:"), layout.slider_offset(i));
                             }
-                            if layout.steering {
+                            if layout.tilt {
+                                let at = layout.tilt_offset();
+                                row(ui, "tilt.forward:".to_string(), at);
+                                row(ui, "tilt.side:".to_string(), at + 1);
+                            }
+                            if layout.bearing {
                                 let at = layout.bearing_offset();
                                 row(ui, "target.sin:".to_string(), at);
                                 row(ui, "target.cos:".to_string(), at + 1);

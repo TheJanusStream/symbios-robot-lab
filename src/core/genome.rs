@@ -54,7 +54,28 @@ pub struct AgentGenotype {
     /// tuned for many.
     #[serde(default)]
     pub body_age: u32,
+
+    /// The robot's identity within a session, so that a parent walking again
+    /// is matched with its own scores (see
+    /// [`crate::core::population::RobotIds`]). 0 until one is issued:
+    /// children, fresh robots and imported ones get theirs when they join a
+    /// generation.
+    #[serde(default)]
+    pub id: u64,
+
+    /// How strongly the robot's steering reflex turns it toward a target
+    /// (the target task): each driven joint's swing is scaled by `1 + gain x
+    /// side x turn`, so the joints on one side of the body step shorter (Lan
+    /// et al. 2020). Evolved; its sign picks which side shortens. 0 for a
+    /// robot bred to walk forward, which has no reflex.
+    #[serde(default)]
+    pub steering_gain: f32,
 }
+
+/// The strongest steering reflex a robot may evolve.
+pub const MAX_STEERING_GAIN: f32 = 2.0;
+/// A steering mutation adds a uniform step of up to this size.
+const STEERING_STEP: f32 = 0.25;
 
 /// L-System derivation steps a fresh genotype starts with.
 pub const INITIAL_LSYSTEM_ITERATIONS: usize = 3;
@@ -106,7 +127,14 @@ impl AgentGenotype {
             lsystem_iterations: INITIAL_LSYSTEM_ITERATIONS,
             rhythm_hz: DEFAULT_RHYTHM_HZ,
             body_age: 0,
+            id: 0,
+            steering_gain: 0.0,
         }
+    }
+
+    /// A target-task robot's first steering reflex: uniform in `[-1, 1]`.
+    pub fn random_steering_gain(rng: &mut impl Rng) -> f32 {
+        rng.random_range(-1.0..=1.0)
     }
 
     /// Whether `other` grows the same body: the same L-system source, seed
@@ -126,6 +154,7 @@ impl AgentGenotype {
             lsystem_seed: pick(self.lsystem_seed, other.lsystem_seed, rng),
             lsystem_iterations: pick(self.lsystem_iterations, other.lsystem_iterations, rng),
             generation: self.generation.max(other.generation) + 1,
+            id: 0,
             ..self.clone()
         };
         child.mutate_body(rng, rate);
@@ -139,7 +168,9 @@ impl AgentGenotype {
         let mut child = Self {
             controller: self.cross_controller(other, rng),
             rhythm_hz: pick(self.rhythm_hz, other.rhythm_hz, rng),
+            steering_gain: pick_gain(self.steering_gain, other.steering_gain, rng),
             generation: self.generation.max(other.generation) + 1,
+            id: 0,
             ..self.clone()
         };
         child.mutate_brain(rng, rate);
@@ -281,12 +312,18 @@ impl AgentGenotype {
         }
     }
 
-    /// Varies the brain: the controller genome and the clock's frequency.
+    /// Varies the brain: the controller genome, the clock's frequency, and
+    /// the steering reflex of a robot that has one.
     pub fn mutate_brain<R: Rng>(&mut self, rng: &mut R, rate: f32) {
         self.controller.mutate(rng, rate);
         if rng.random_bool((rate * 0.5).clamp(0.0, 1.0) as f64) {
             let step = rng.random_range(-RHYTHM_STEP..=RHYTHM_STEP).exp();
             self.rhythm_hz = (self.rhythm_hz * step).clamp(MIN_RHYTHM_HZ, MAX_RHYTHM_HZ);
+        }
+        if self.steering_gain != 0.0 && rng.random_bool((rate * 0.5).clamp(0.0, 1.0) as f64) {
+            let step = rng.random_range(-STEERING_STEP..=STEERING_STEP);
+            self.steering_gain =
+                (self.steering_gain + step).clamp(-MAX_STEERING_GAIN, MAX_STEERING_GAIN);
         }
     }
 }
@@ -311,7 +348,20 @@ impl Genotype for AgentGenotype {
             lsystem_iterations: pick(self.lsystem_iterations, other.lsystem_iterations, rng),
             rhythm_hz: pick(self.rhythm_hz, other.rhythm_hz, rng),
             body_age: 0,
+            id: 0,
+            steering_gain: pick_gain(self.steering_gain, other.steering_gain, rng),
         }
+    }
+}
+
+/// One parent's steering gain, evenly; no draw when neither parent has a
+/// reflex (robots bred to walk forward breed exactly as they did before the
+/// reflex existed).
+fn pick_gain(a: f32, b: f32, rng: &mut impl Rng) -> f32 {
+    if a == 0.0 && b == 0.0 {
+        0.0
+    } else {
+        pick(a, b, rng)
     }
 }
 

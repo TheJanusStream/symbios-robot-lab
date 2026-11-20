@@ -7,16 +7,16 @@ Built with [Bevy](https://bevyengine.org/) and [Avian3D](https://github.com/Jond
 ## Features
 
 - **Co-evolution of body and brain**: L-System grammars define the robot's structure (parts, joints, sensors); a neural network drives the joints. Each child varies its body or its brain, and new bodies can be protected while their brains catch up. See [Breeding](#breeding).
-- **Two brain encodings**: HyperNEAT (the default) evolves a pattern, a CPPN, that paints the network onto the body, so one genome drives any body; direct NEAT evolves the network itself. See [Brains](#brains).
+- **Three brain encodings**: HyperNEAT (the default) evolves a pattern, a CPPN, that paints the network onto the body, so one genome drives any body; direct NEAT evolves the network itself; pattern generators play each joint a painted rhythm that starts over whenever its foot lands. See [Brains](#brains).
 - **Six evolutionary algorithms**: NSGA-II (multi-objective), SimpleGA (elitist tournament), grid MAP-Elites and CVT-MAP-Elites (quality-diversity archives), novelty search, and Dominated Novelty Search (quality diversity without a grid). The quality-diversity algorithms spread robots over their gait, their body, or both. See [Quality diversity](#quality-diversity).
-- **Sensors**: IMU (accelerations), touch, ultrasonic range, hinge angles and slider extensions, alongside a clock (its sine and cosine) whose frequency, 0.25 to 4 Hz, each robot evolves. Each driven joint's output is a target position within its own limits, reached by a motor held to the effort its limit gives (an evolvable constant, capped).
+- **Sensors**: IMU (accelerations), touch, ultrasonic range, hinge angles and slider extensions, alongside a clock (its sine and cosine) whose frequency, 0.25 to 4 Hz, each robot evolves, and as an option the body's tilt (see [Sensing tilt](#sensing-tilt)). Each driven joint's output is a target position within its own limits, reached by a motor held to the effort its limit gives (an evolvable constant, capped).
 - **Joints**: driven hinges and sliders, passive ball joints with twist and swing limits, and welds.
 - **Terrain**: the flat floor, or rough (bumps up to 20 cm) or hilly (hills up to 3 m) ground from [bevy_symbios_ground](https://github.com/TheJanusStream/bevy_symbios_ground), laid afresh each generation from the run's seed and the generation number, so no gait wins by fitting one patch of ground and runs with the same seed walk the same grounds. Heights and bounce are measured above the ground under the body.
-- **Two tasks**: walk forward, or walk to a target whose bearing the brain reads (placed by the user in the window, or drawn anew each generation). See [Walking to a target](#walking-to-a-target).
+- **Two tasks**: walk forward, or walk to targets whose bearing the brain reads, turning both ways between them with an evolved steering reflex (targets drawn anew for every leg of the walk, or one placed by the user in the window). See [Walking to a target](#walking-to-a-target).
 - **Anti-"vibrobot" fitness**: forward displacement (or progress toward the target) times seven quality factors (posture, smoothness, control jerk, body jerk, a minimum speed, foot step cycles, centre-of-mass bounce), so robots that slide by vibrating score near zero.
 - **Live UI**: an egui panel with algorithm selection, parameter sliders, fitness graphs, the Pareto front, the quality-diversity archives and the parents' spread. Click a robot to inspect its body, brain and live inputs.
-- **Break a leg**: lame any robot from its inspector (its leg's joints go limp) to see how its gait copes, or evolve with every robot missing a random leg. See [Leg damage](#leg-damage).
-- **Hall of fame**: the session's best robots, to watch walking on their own, copy or save as JSON, import (pasted, or dropped onto the window on the desktop), or send back into evolution. See [Hall of fame](#hall-of-fame).
+- **Break a leg**: lame any robot from its inspector (its leg's joints go limp) to see how its gait copes, or (experimental) evolve with every robot missing a random leg. See [Leg damage](#leg-damage).
+- **Hall of fame**: the best robots, kept between sessions, to watch walking on their own, share as a link, copy or save as JSON, import (pasted, or dropped onto the window on the desktop), or send back into evolution, and a race of the run's generations side by side. See [Hall of fame](#hall-of-fame).
 - **Headless runs**: the evolution loop runs without a window, for tests, batch runs and experiments. A seed repeats a whole run exactly.
 - **WebAssembly**: deployed to GitHub Pages.
 
@@ -28,7 +28,7 @@ Built with [Bevy](https://bevyengine.org/) and [Avian3D](https://github.com/Jond
 cargo run
 ```
 
-Evolution starts as soon as the window opens; **Restart evolution** starts over. Drop `.lsys` files into `assets/morphologies/` and they join the pool of fresh bodies (native only).
+Evolution starts as soon as the window opens; **Restart evolution** starts over. Drop `.lsys` files into `assets/morphologies/` and they join the pool of fresh bodies (native only). Give a share link as an argument (`cargo run -- 'https://...#robot=...'`) and its robot walks as the lab opens.
 
 ### Headless
 
@@ -36,7 +36,7 @@ Evolution starts as soon as the window opens; **Restart evolution** starts over.
 cargo run --release --example evolve -- --generations 30 --seed 1
 ```
 
-One row per generation (best and mean fitness, the parent pool's best, the furthest robot, explosions, the pool's distinct bodies and its oldest body's age). Options: `--population`, `--duration`, `--algorithm simple|nsga2|map-elites|cvt|novelty|dns`, `--descriptor gait|body|body-gait`, `--terrain flat|rough|hilly`, `--task forward|target`, `--brain hyperneat|direct`, `--mutation-rate`, `--vary-body-or-brain on|off`, `--protect-new-bodies on|off`, `--leg-damage on|off`, `--import PATH` (a saved robot joins the first generation; repeatable), `--save-best PATH` (the run's best robot as JSON), `--csv PATH`. From code, `symbios_robot_lab::headless::HeadlessLab` runs the same loop.
+One row per generation (best and mean fitness, the parent pool's best, the furthest robot, explosions, the pool's distinct bodies and its oldest body's age). Options: `--population`, `--duration`, `--algorithm simple|nsga2|map-elites|cvt|novelty|dns`, `--descriptor gait|body|body-gait`, `--terrain flat|rough|hilly`, `--task forward|target`, `--brain hyperneat|direct|supg`, `--mutation-rate`, `--parent-share F`, `--retests N` (see [Breeding](#breeding)), `--vary-body-or-brain on|off`, `--protect-new-bodies on|off`, `--leg-damage on|off`, `--tilt on|off`, `--import PATH` (a saved robot joins the first generation; repeatable), `--save-best PATH` (the run's best robot as JSON), `--save-hall PATH` (the hall of fame as JSON), `--fresh N` (at the end, walk the hall's best four again under N fresh conditions: their scores may have been lucky), `--score PATH` (instead of evolving, score saved robots under fresh conditions; repeatable), `--csv PATH`. From code, `symbios_robot_lab::headless::HeadlessLab` runs the same loop.
 
 ### Web (WASM)
 
@@ -69,11 +69,13 @@ The library holds everything that does not draw; the binary adds the window.
 ```text
 src/
   lib.rs, headless.rs   the library and its headless runner
-  core/                 config, genotypes, population, presets, hot-loaded morphologies
+  core/                 config, genotypes, population, presets, share codes,
+                        hot-loaded morphologies
   simulation/           SimulationPlugin: bodies, sensors, brains, metrics, fitness,
                         the parent pool and the generational lifecycle, on fixed steps
   main.rs               the windowed app
-  ui/                   egui control panel and robot inspector
+  ui/                   egui control panel, robot inspector, hall of fame (kept
+                        between sessions)
   visuals/              scene, robot meshes and materials, camera follow
 examples/evolve.rs      headless runs from the command line
 tests/
@@ -89,40 +91,62 @@ Every generation lasts a fixed number of physics steps (default 15 simulated sec
 1. **Spawn**: each agent's L-System genotype is derived into a body, and its brain is compiled into a feed-forward network for that body (see [Brains](#brains)).
 2. **Evaluate**: every fixed step, sensors fill the brain's inputs, the network drives the joint motors, and metrics accumulate. The first third of the generation is settling and is not measured.
 3. **Score**: the walker fitness above; NSGA-II adds the inverse Cost of Transport as a second objective. Robots that explode score below every intact one.
-4. **Breed**: parents are selected by the active algorithm, and each child varies its body or its brain (see [Breeding](#breeding)); a tenth of each generation is fresh bodies from the morphology presets.
+4. **Breed**: parents are selected by the active algorithm, and each child varies its body or its brain (see [Breeding](#breeding)); a tenth of each generation is fresh bodies from the morphology presets, and the best parents can walk again in children's places.
 
 ### Brains
 
-Both encodings evolve a NEAT genome and run the same kind of feed-forward network, with one input per sensor value and one `tanh` output per driven joint. An output picks the joint's target position within its range, and the joint's motor servoes there.
+Every encoding evolves a NEAT genome. Two of them run a feed-forward network, with one input per sensor value and one `tanh` output per driven joint; the third plays patterns. An output picks the joint's target position within its range, and the joint's motor servoes there.
 
 - **Direct NEAT**: the genome is the network. Inputs and outputs are numbered, so when crossover or mutation changes the body, the network is resized and the numbers shift meaning.
 - **HyperNEAT** (`src/simulation/hyperneat.rs`): the genome is a CPPN, and the network is painted from it for each body, through symbios-neat's `SubstratePainter`. Every input except the clock sits at a point on the body: an IMU's channels around the IMU, a touch or distance sensor at its mount, a hinge's angle at the hinge, a slider's extension at the slider. Each driven joint has an interneuron and a motor neuron where it sits. The CPPN is asked, for each pair of neurons, given both positions and their distance, whether they link and how strongly; and for each joint, its biases and the weights from the clock's sine and cosine (its rhythm's phase and strength). Each kind of link has its own CPPN output, and a fresh CPPN links only neurons near each other, a rule evolution can reshape. Because the brain depends on where things are rather than how they are numbered, an offspring that grows a leg gets a controller for it, and legs placed alike move alike.
+- **Pattern generators** (`src/simulation/supg.rs`, after Morse et al. 2013): no network. Each driven joint plays a pattern over time, painted by an evolved CPPN from where the joint sits on the body: given the joint's place and the sine and cosine of its pattern's phase, the CPPN gives the joint's target, and at phase 0 the pattern's offset, which spreads the joints apart (a knee can lag its hip). A pattern lasts one period of the robot's rhythm, and the pattern of a joint on a leg starts over whenever that leg's foot touches down, so legs fall into step with the ground and with each other. Of five encodings Tarapore and Mouret compared (2015), this one evolved best and recovered fastest from damage.
 
-Measured with the headless runner (16 to 32 seeds per setting, 30 generations, NSGA-II, 64 robots, 15 s), HyperNEAT reaches a final best fitness of about 1.8 (1.79 to 1.88 with weight limits from 0.25 to 0.6; the lab uses 0.5) against 1.48 for direct NEAT. Two choices made the difference. A fresh CPPN links only neurons near each other: with every link expressed, 84% of fresh motors sat pinned at a limit. And painted weights stay small, so motor neurons follow the clock as smooth waves instead of slamming between their limits: with weights up to 3, HyperNEAT reached only 0.63.
+Measured over 32 seeds (30 generations, NSGA-II keeping all 64 parents), the champions of pattern-generator runs walked a little better under fresh conditions than HyperNEAT's (2.13 against 1.86, not significant) and coped best with a broken leg (1.14 against 0.87, p = 0.11); HyperNEAT stays the default. Measured with the headless runner (16 to 32 seeds per setting, 30 generations, NSGA-II, 64 robots, 15 s), HyperNEAT reaches a final best fitness of about 1.8 (1.79 to 1.88 with weight limits from 0.25 to 0.6; the lab uses 0.5) against 1.48 for direct NEAT. Two choices made the difference. A fresh CPPN links only neurons near each other: with every link expressed, 84% of fresh motors sat pinned at a limit. And painted weights stay small, so motor neurons follow the clock as smooth waves instead of slamming between their limits: with weights up to 3, HyperNEAT reached only 0.63.
 
 ### Breeding
 
 Every genotype carries its body (the L-system, its seed and derivation steps), its brain (the NEAT genome) and its clock's frequency. A child crosses its two parents and mutates the result, but by default only one half of it: half the children cross and mutate the bodies and keep the fitter parent's brain, the other half keep that parent's body and cross and mutate the brains. A new body is first tried with a brain that already walks, and a new brain on a body it was bred for. Measured over 32 seeds with NSGA-II, this beat changing both at once by +0.50 in the pool's best fitness at 30 generations (p = 0.05) and +0.64 at 100, and halved the robots the physics blew apart.
 
+**Parents kept** (NSGA-II, SimpleGA, Dominated Novelty Search) is the share of a generation kept as parents: fewer breed from the best more often, more keep more kinds of body. **Parents walking again** clones the best parents by average score into the next generation, in children's places, and adds each new walk to their average, which the hall of fame shows with the walks behind it. Conditions change between generations (every robot walks from its own spot, and on new ground or toward new targets where asked), so one walk can flatter a robot. Measured over 32 seeds with NSGA-II, each run's hall champions walking again as clones under 8 fresh conditions (the share of their recorded score they kept in brackets):
+
+| | flat, 30 generations | flat, 100 | hills, 30 |
+| --- | --- | --- | --- |
+| all 64 parents kept | 1.86 (82%) | 3.48 (73%) | 1.09 (56%) |
+| half kept (the default) | 2.29 (81%) | 4.17 (81%) | 1.17 (52%) |
+| half kept, 8 walking again | 2.13 (91%) | 3.89 (90%) | 1.41 (76%) |
+
+Keeping half gained +0.43 at 30 generations (p = 0.08) and +0.70 at 100 (p = 0.045), and over 16 seeds it gained with SimpleGA (+0.52) and Dominated Novelty Search (+0.22) too, keeping half as many kinds of body. Walking again keeps the hall honest and gained on hills (+0.24 over half alone, p = 0.14), but the children it displaces cost on the flat floor (-0.16 and -0.29, neither significant): it is an option for changing conditions, off by default.
+
 **Protect new bodies** (NSGA-II) adds Cheney et al.'s morphological innovation protection (2018): every body counts the generations it has been in the gene pool, and youth becomes a third objective, so a new body has a few generations to tune its brain before it must outwalk bodies whose brains have been tuned for many. Over 100 generations it kept more and younger bodies (48 distinct in the pool against 36) and closed most of a slower start on varying alone (-0.42 at 30 generations, -0.16 at 100). The paper saw its gains over thousands of generations, so it is an option for long runs and for body diversity.
 
 ### Walking to a target
 
-In the target task each brain gets two more inputs, the sine and cosine of the target's bearing from the robot's heading, and the walk scores the ground it gains toward the target instead of forward displacement. Each generation draws one direction, from the run's seed and the generation number, and every robot's target lies 10 m from its spawn point that way: robots of a generation compete on equal footing, and successive generations steer every way. HyperNEAT places the two bearing neurons just ahead of and beside the robot's root part, so a CPPN can paint, say, the left legs' response to a target on the left. In the window, **Click the ground to place the target** sends every robot to one point.
+In the target task each brain gets two more inputs, the sine and cosine of the target's bearing from the robot's heading, and the walk scores the ground it gains toward its targets instead of forward displacement. While it settles, a robot heads for a target 10 m away in the generation's direction. The measured window is then split into two legs, and at the start of each a new target appears 10 m away at 45 to 135 degrees from the robot's own heading, on alternating sides, so every walk asks for turning both ways. The turns are drawn per generation from the run's seed, so a generation's robots turn alike and compete fairly. HyperNEAT places the two bearing neurons just ahead of and beside the robot's root part, so a CPPN can paint, say, the left legs' response to a target on the left. In the window, **Click the ground to place the target** sends every robot to one point.
+
+Every target-task robot also has a steering reflex (after Lan et al. 2020): each driven joint's output is scaled by `1 + gain x side x turn`, within 0 to 2, where `side` is where the part the joint moves sits across the body (-1 to 1) and `turn` is the target's bearing over pi, so the joints on one side swing shorter and the robot turns. The gain evolves (-2 to 2); a robot bred to walk forward, or imported, gets a random one when the task turns to targets. The brain still reads the bearing and can steer on its own.
+
+The task used to give each generation one target in one direction, and robots scored by walking whichever way they happened to face. Measured over 32 seeds (30 generations), the best robot of each run walking to new targets under 12 fresh conditions: bred on the old task 0.22, bred to walk forward 0.21, bred on this one 0.88 (p < 0.001 against both).
+
+### Sensing tilt
+
+The IMU senses jolts (finite differences of its velocity), not lean. With **Sense tilt** on (`--tilt on`), brains get two more inputs, the vertical components of the body's forward and sideways axes (how far each leans from level), and HyperNEAT places their neurons above the bearing's. Measured over 32 seeds it did not help: -0.07 on hills and -0.18 on the flat floor under fresh conditions (neither significant). It is off by default.
 
 ### Leg damage
 
-A leg is the chain of parts from a foot (a part nothing hangs from) up to the first part that branches: the hexapod's six legs of three joints, a millipede's pairs of legs but not its spine, the Scout's neck. Breaking a leg turns off the motors of its driven joints, so it hangs limp within its limits. **Break a leg** in a robot's inspector lames one of its legs at random (any robot, the showcased one included), and **Mend** restores them, in the spirit of Cully et al.'s robots that recover from damage (2015). With **Leg damage** on, every robot walks with one leg broken, a different one per robot and generation (drawn from the run's seed), so evolution favours gaits that survive losing any leg.
+A leg is the chain of parts from a foot (a part nothing hangs from) up to the first part that branches: the hexapod's six legs of three joints, a millipede's pairs of legs but not its spine, the Scout's neck. Breaking a leg turns off the motors of its driven joints, so it hangs limp within its limits. **Break a leg** in a robot's inspector lames one of its legs at random (any robot, the showcased one included), and **Mend** restores them, in the spirit of Cully et al.'s robots that recover from damage (2015). With **Leg damage** on, every robot walks with one leg broken, a different one per robot and generation (drawn from the run's seed), in the hope that evolution favours gaits that survive losing any leg. That option is experimental: measured over 32 seeds, the best robots of runs bred with a leg broken walked worse with a broken leg (0.66 under fresh conditions) than robots bred intact (0.87), with pattern generators too (0.78 against 1.14).
 
 ### Hall of fame
 
-The best walking robot of every generation is offered to the hall, which keeps the ten best of the session, across restarts. Each can be:
+The best walking robot of every generation is offered to the hall, which keeps the ten best across restarts and, in the window, between sessions: in the browser's local storage, or on the desktop in `symbios-robot-lab/hall_of_fame.json` in the user's data folder (`$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows). A kept hall that does not come back whole (a robot the import checks refuse, say) is copied aside first, to `hall_of_fame.unread.json` or a second storage entry, since the next save replaces it. A robot that walks again (see [Breeding](#breeding)) shows its average and the walks behind it. Each can be:
 
-- **watched**: it walks on its own in front of the population, followed by the camera, with the current task's brain inputs. It is never scored and changes nothing in the run (a test checks that a run with a showcased robot repeats one without).
+- **watched**: it walks on its own in front of the population, followed by the camera, with the current task's brain inputs. It is never scored and changes nothing in the run (a test checks that a run with showcased robots repeats one without).
+- **shared** as a link: the lab's page with the robot in the address, its genotype as compact JSON, deflated and in URL-safe base64 (about 4 KB). Opening the link adds the robot to the hall and sets it walking. It arrives as imported: its score belongs to the run it walked in.
 - **copied** or **saved** as JSON: its genotype (body, brain, rhythm) with the fitness and generation it scored.
 - **bred**: it joins the next generation (or a restarted run's first) as a body new to that run.
 
-A robot's JSON, or a bare genotype, can be imported by pasting it into the window, by dropping the file onto the window on the desktop, or with `--import` in headless runs. An imported robot must grow a body with driven joints; a direct brain that does not fit its body or the task is resized.
+A robot's JSON (or a bare genotype, or a whole saved hall) or a share link can be imported by pasting it into the window, a JSON file by dropping it onto the window on the desktop, or with `--import` in headless runs. An imported robot must grow a body with driven joints, and a direct brain that does not fit its body or the task is resized. It enters the hall once, without the identity number it had where it came from.
+
+**Race of generations**: the run keeps its best robot as of generation 0 and every 10th generation since (past 16 kept, the stride doubles and every other one leaves), and **Race** sets up to six of them walking side by side in lanes: generation 0, the latest, and four spread between (all it has while the run is young). The hall shows the standings live, each racer's distance from where it started. Racers, like watched robots, are never scored.
 
 ### Quality diversity
 
@@ -136,7 +160,7 @@ Every robot's descriptor holds all four traits, so switching spaces mid-run re-f
 
 Dominated Novelty Search (Bahlous-Boldi et al., GECCO 2025) needs no grid or bounds: each robot scores its mean distance to its three nearest fitter robots, and the highest scores survive, so a robot lives by being the best of its region or far from anyone better. The fittest always survives.
 
-Measured over 16 seeds of 30 generations (pool best fitness; distinct bodies kept): MAP-Elites over gait 1.21, 87; Dominated Novelty Search over gait 1.22, 44; MAP-Elites over body 1.66, 45; Dominated Novelty Search over body 1.05, 54. Over body traits many robots share a body exactly (a brain-only child keeps its parent's), and a fitter twin at distance zero leaves Dominated Novelty Search only the best few of each body: more kinds of body, less refinement of each. NSGA-II, which keeps no diversity on purpose, reaches about 2.5 in the same time.
+Measured over 16 seeds of 30 generations, keeping all 64 parents (pool best fitness; distinct bodies kept): MAP-Elites over gait 1.21, 87; Dominated Novelty Search over gait 1.22, 44; MAP-Elites over body 1.66, 45; Dominated Novelty Search over body 1.05, 54. Over body traits many robots share a body exactly (a brain-only child keeps its parent's), and a fitter twin at distance zero leaves Dominated Novelty Search only the best few of each body: more kinds of body, less refinement of each. NSGA-II, which keeps no diversity on purpose, reaches about 2.5 in the same time. Keeping half the parents, the default since, Dominated Novelty Search over gait keeps half as many kinds of body (22 against 44) and its champions walk a little better under fresh conditions (+0.22, not significant); raise **Parents kept** for diversity.
 
 ### Morphology presets
 

@@ -2,16 +2,17 @@
 //! sensors and joints wired to a compiled brain, and the generation clock
 //! started.
 
-use crate::core::config::{LabConfig, Task};
+use crate::core::config::{LabConfig, Senses};
 use crate::core::descriptor::BodyTraits;
 use crate::core::genome::AgentGenotype;
 use crate::core::population::Population;
 use crate::simulation::body::{SpawnedBody, SpawnedJoint, legs, spawn_body};
 use crate::simulation::brain::{
     DEFAULT_HINGE_RANGE, DEFAULT_SLIDER_RANGE, DrivenJoint, MAX_MOTOR_TORQUE, MAX_PRISMATIC_FORCE,
-    RobotBrain, compile_brain,
+    RobotBrain, Steering, compile_brain,
 };
 use crate::simulation::clock::GenerationClock;
+use crate::simulation::hyperneat::joint_sides;
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::simulation::metrics::{AgentMetrics, FitnessBaseline};
 use crate::simulation::rng::{LabRng, generation_seed};
@@ -39,18 +40,32 @@ pub fn damage_draw(run_seed: u64, generation: usize, index: usize) -> u64 {
 
 /// The brain index of a robot walking outside the population, such as the
 /// hall of fame's showcase: no agent has it, so nothing scores the robot.
+/// It is the first showcase lane's; the others count down from it.
 pub const SHOWCASE_INDEX: usize = usize::MAX;
+/// The most robots that walk in the showcase at once, side by side.
+pub const SHOWCASE_LANES: usize = 8;
+
+/// The brain index of the robot in showcase lane `lane` (below
+/// [`SHOWCASE_LANES`]).
+pub fn showcase_index(lane: usize) -> usize {
+    SHOWCASE_INDEX - lane.min(SHOWCASE_LANES - 1)
+}
+
+/// Whether brain index `index` is a showcase lane's.
+pub fn is_showcase(index: usize) -> bool {
+    index > SHOWCASE_INDEX - SHOWCASE_LANES
+}
 
 /// A robot to spawn.
 pub struct RobotSpawn<'a> {
     pub genotype: &'a AgentGenotype,
     pub blueprint: &'a RobotBlueprint,
-    /// The agent's index, or [`SHOWCASE_INDEX`].
+    /// The agent's index, or a showcase lane's ([`showcase_index`]).
     pub index: usize,
     /// Where on the ground (world x and z).
     pub grid: Vec2,
-    /// The task its brain is compiled for.
-    pub task: Task,
+    /// What its brain senses beyond its body's sensors.
+    pub senses: Senses,
     /// Its target (world x and z), in the target task.
     pub target: Option<Vec2>,
     /// A draw that picks one of its legs to break, under leg damage.
@@ -79,7 +94,7 @@ pub fn spawn_robot<B: Bundle>(
     ground: &Ground,
     extra: impl FnOnce(&SpawnedRobot) -> B,
 ) -> Result<SpawnedRobot, String> {
-    let network = compile_brain(robot.genotype, robot.blueprint, robot.task)
+    let controller = compile_brain(robot.genotype, robot.blueprint, robot.senses)
         .map_err(|err| format!("failed to compile its brain: {err}"))?;
     let body = spawn_body(
         commands,
@@ -111,27 +126,40 @@ pub fn spawn_robot<B: Bundle>(
         touches: body.sensors_of(SensorType::Touch).count(),
         total_mass: body.total_mass,
     };
-    let num_inputs = network.num_inputs();
+    let num_inputs = controller.num_inputs().unwrap_or_else(|| {
+        InputLayout::of_blueprint(robot.blueprint)
+            .with_senses(robot.senses)
+            .total()
+    });
     let parts = body.parts.iter().skip(1).map(|&(_, e)| e).collect();
     commands.entity(body_entity).insert((
         RobotBrain {
-            scratchpad: network.create_scratchpad(),
-            outputs: vec![0.0; network.num_outputs()],
-            network,
+            outputs: vec![0.0; controller.num_outputs()],
+            controller,
             agent_index: robot.index,
             sensor_inputs: vec![0.0; num_inputs],
             hinge_joints: wiring.hinge_joints,
             prismatic_joints: wiring.prismatic_joints,
             parts,
             rhythm_hz: robot.genotype.rhythm_hz,
+            tilt_input: robot.senses.tilt.then(|| {
+                InputLayout::of_blueprint(robot.blueprint)
+                    .with_senses(robot.senses)
+                    .tilt_offset()
+            }),
+            steering: robot.target.map(|_| Steering {
+                gain: robot.genotype.steering_gain,
+                sides: joint_sides(robot.blueprint),
+                turn: 0.0,
+            }),
         },
         extra(&spawned),
     ));
     if let Some(point) = robot.target {
-        commands.entity(body_entity).insert(WalkTarget {
-            point,
-            input_offset: InputLayout::of_blueprint(robot.blueprint).bearing_offset(),
-        });
+        let input_offset = InputLayout::of_blueprint(robot.blueprint).bearing_offset();
+        commands
+            .entity(body_entity)
+            .insert(WalkTarget::first(point, input_offset));
     }
     Ok(spawned)
 }
@@ -190,7 +218,7 @@ pub fn spawn_agents(
             blueprint: &blueprint,
             index,
             grid,
-            task: config.task,
+            senses: config.senses(),
             target: config
                 .task
                 .steers()

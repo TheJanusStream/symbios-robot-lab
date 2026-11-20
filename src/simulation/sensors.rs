@@ -3,7 +3,7 @@
 //! and velocities, which are current at every fixed step (a `Transform` or
 //! `GlobalTransform` read here would be up to a frame stale).
 
-use crate::core::config::Task;
+use crate::core::config::Senses;
 use crate::simulation::brain::RobotBrain;
 use crate::simulation::clock::GenerationClock;
 use crate::simulation::collision::GameLayer;
@@ -32,14 +32,20 @@ pub const INPUTS_PER_SLIDER: usize = 1;
 /// In the target task, two more inputs: the sine and cosine of the target's
 /// angle from the robot's heading (see [`bearing`]).
 pub const NUM_BEARING_INPUTS: usize = 2;
+/// With the tilt sense, two more: how far the body's forward and sideways
+/// axes lean from level (see [`tilt`]).
+pub const NUM_TILT_INPUTS: usize = 2;
 /// Maximum range of the ultrasonic sensor (m). Nothing in range reads 0.
 pub const ULTRASONIC_MAX_RANGE: f32 = 8.0;
 
 /// How a body's sensors map onto its brain's inputs. Layout:
 /// `[clock (2), imu (6 each), touch (1 each), ultrasonic (1 each),
 /// hinge angle (1 each), slider extension (1 each), target bearing (2, in
-/// the target task)]`. The bearing comes last so that a direct brain keeps
-/// its other inputs' meanings when the task changes.
+/// the target task), tilt (2, with the tilt sense)]`. The senses beyond the
+/// body's sensors come last, so that a direct brain, resized by adding or
+/// dropping inputs at the end, keeps its sensors' meanings when they come
+/// and go. Between the two senses it cannot: with tilt on, a task switch
+/// hands the tilt's weights to the bearing or the bearing's to the tilt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InputLayout {
     pub imus: usize,
@@ -48,7 +54,9 @@ pub struct InputLayout {
     pub hinges: usize,
     pub sliders: usize,
     /// Whether the brain reads a target's bearing.
-    pub steering: bool,
+    pub bearing: bool,
+    /// Whether the brain reads its body's tilt.
+    pub tilt: bool,
 }
 
 impl InputLayout {
@@ -77,17 +85,25 @@ impl InputLayout {
         layout
     }
 
-    /// This layout for `task`: with the bearing inputs if it steers.
-    pub fn for_task(self, task: Task) -> Self {
+    /// This layout with `senses`' inputs.
+    pub fn with_senses(self, senses: Senses) -> Self {
         Self {
-            steering: task.steers(),
+            bearing: senses.bearing,
+            tilt: senses.tilt,
             ..self
         }
     }
 
     /// Total number of brain inputs.
     pub fn total(&self) -> usize {
-        let bearing = if self.steering { NUM_BEARING_INPUTS } else { 0 };
+        let tilt = if self.tilt { NUM_TILT_INPUTS } else { 0 };
+        self.tilt_offset() + tilt
+    }
+
+    /// Where the tilt inputs start (if the brain reads them): after the
+    /// bearing's.
+    pub fn tilt_offset(&self) -> usize {
+        let bearing = if self.bearing { NUM_BEARING_INPUTS } else { 0 };
         self.bearing_offset() + bearing
     }
 
@@ -131,9 +147,11 @@ impl InputLayout {
 /// angular velocity in its own frame lost 20 to 40% of the final fitness,
 /// and feeding no IMU at all lost about 20%, so the jolts help. A likely
 /// reason: fresh brains that react to them move jerkily and score near
-/// zero, which favours decisive, clock-driven gaits from the start.
-/// Terrain or pushes, where balance matters, call for measuring a tilt
-/// sensor again.
+/// zero, which favours decisive, clock-driven gaits from the start. Tilt
+/// added beside it, as two more inputs ([`LabConfig::tilt_sense`]), did not
+/// help on hills either (32 seeds).
+///
+/// [`LabConfig::tilt_sense`]: crate::core::config::LabConfig::tilt_sense
 #[derive(Component)]
 pub struct AgentImu {
     pub brain_entity: Entity,
@@ -369,12 +387,36 @@ pub fn gather_sensor_inputs(
             continue;
         };
         let reading = bearing(position.0, rotation.0, target.point);
-        if let Ok(mut brain) = brains.get_mut(body)
-            && let Some(slot) = brain
-                .sensor_inputs
-                .get_mut(target.input_offset..target.input_offset + NUM_BEARING_INPUTS)
+        let Ok(mut brain) = brains.get_mut(body) else {
+            continue;
+        };
+        if let Some(steering) = brain.steering.as_mut() {
+            steering.turn = reading[0].atan2(reading[1]) / std::f32::consts::PI;
+        }
+        if let Some(slot) = brain
+            .sensor_inputs
+            .get_mut(target.input_offset..target.input_offset + NUM_BEARING_INPUTS)
         {
             slot.copy_from_slice(&reading);
+        }
+    }
+}
+
+/// How far the body leans: the vertical parts of its forward and sideways
+/// axes (its x and z), 0 when level and 1 when standing on end.
+pub fn tilt(rotation: Quat) -> [f32; 2] {
+    [(rotation * Vec3::X).y, (rotation * Vec3::Z).y]
+}
+
+/// Writes each brain's tilt with the tilt sense, from the part that carries
+/// it. Runs after `gather_sensor_inputs`, which clears the inputs.
+pub fn sense_tilt(mut brains: Query<(&mut RobotBrain, &Rotation)>) {
+    for (mut brain, rotation) in &mut brains {
+        let Some(at) = brain.tilt_input else {
+            continue;
+        };
+        if let Some(slot) = brain.sensor_inputs.get_mut(at..at + NUM_TILT_INPUTS) {
+            slot.copy_from_slice(&tilt(rotation.0));
         }
     }
 }
@@ -405,6 +447,18 @@ mod tests {
     }
 
     #[test]
+    fn tilt_reads_how_far_the_body_leans() {
+        assert_eq!(tilt(Quat::IDENTITY), [0.0, 0.0]);
+        // The spawn turn (over, about x) leaves a standing robot level.
+        let standing = Quat::from_rotation_x(-std::f32::consts::PI);
+        let [forward, side] = tilt(standing);
+        assert!(forward.abs() < 1e-6 && side.abs() < 1e-6);
+        // Nose up by 30 degrees: forward reads sin(30).
+        let [forward, side] = tilt(Quat::from_rotation_z(std::f32::consts::FRAC_PI_6));
+        assert!((forward - 0.5).abs() < 1e-5 && side.abs() < 1e-5);
+    }
+
+    #[test]
     fn the_layout_packs_sensor_kinds_in_order() {
         let layout = InputLayout {
             imus: 1,
@@ -412,7 +466,8 @@ mod tests {
             ultrasonics: 2,
             hinges: 8,
             sliders: 3,
-            steering: false,
+            bearing: false,
+            tilt: false,
         };
         assert_eq!(layout.imu_offset(0), 2);
         assert_eq!(layout.touch_offset(0), 8);
@@ -421,11 +476,22 @@ mod tests {
         assert_eq!(layout.slider_offset(0), 22);
         assert_eq!(layout.total(), 25);
         // The target task appends the bearing, leaving the rest in place.
-        let steering = layout.for_task(Task::Target);
+        let steering = layout.with_senses(Senses::BEARING);
         assert_eq!(steering.bearing_offset(), 25);
         assert_eq!(steering.slider_offset(0), 22);
         assert_eq!(steering.total(), 27);
-        assert_eq!(steering.for_task(Task::Forward), layout);
+        assert_eq!(steering.with_senses(Senses::NONE), layout);
+        // Tilt follows the bearing, or the sensors when there is none.
+        let both = layout.with_senses(Senses {
+            bearing: true,
+            tilt: true,
+        });
+        assert_eq!((both.tilt_offset(), both.total()), (27, 29));
+        let tilt = layout.with_senses(Senses {
+            bearing: false,
+            tilt: true,
+        });
+        assert_eq!((tilt.tilt_offset(), tilt.total()), (25, 27));
     }
 
     #[test]

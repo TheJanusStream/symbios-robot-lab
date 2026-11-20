@@ -16,6 +16,8 @@ pub struct GenerationClock {
     settle_steps: u32,
     step_secs: f32,
     running: bool,
+    /// The clock has been asked to step past the generation's last step.
+    past_end: bool,
 }
 
 impl GenerationClock {
@@ -28,17 +30,24 @@ impl GenerationClock {
         self.settle_steps = (total as f32 * SETTLING_FRACTION).round() as u32;
         self.step_secs = step_secs;
         self.running = true;
+        self.past_end = false;
     }
 
     /// Stops the clock at the end of a generation (or a reset).
     pub fn stop(&mut self) {
         self.running = false;
+        self.past_end = false;
     }
 
     /// Advances one fixed step, stopping at the generation's last step.
     pub fn advance(&mut self) {
-        if self.running && self.step < self.total_steps {
+        if !self.running {
+            return;
+        }
+        if self.step < self.total_steps {
             self.step += 1;
+        } else {
+            self.past_end = true;
         }
     }
 
@@ -51,9 +60,16 @@ impl GenerationClock {
         self.running && self.step >= self.settle_steps
     }
 
-    /// True on the generation's last step.
+    /// True on the generation's last step (and on any after it).
     pub fn is_finished(&self) -> bool {
         self.running && self.step >= self.total_steps
+    }
+
+    /// True on steps after the generation's last, while it waits to be ended
+    /// (auto-advance off, or a fresh-score run reading its scores): the
+    /// robots still move, but their walk is over and nothing more is scored.
+    pub fn is_past_end(&self) -> bool {
+        self.running && self.past_end
     }
 
     /// Fixed steps since this generation's robots were spawned.
@@ -132,15 +148,27 @@ mod tests {
         assert_eq!(clock.window_elapsed_secs(), 10.0);
     }
 
+    /// The clock stops at the last step; steps asked for after it are past
+    /// the end (nothing more is scored) until the next generation starts.
     #[test]
     fn the_clock_stops_at_the_last_step() {
         let mut clock = GenerationClock::default();
         clock.start(1.0, STEP);
+        for _ in 0..clock.total_steps() {
+            clock.advance();
+        }
+        assert!(clock.is_finished());
+        assert!(!clock.is_past_end(), "the last step is still scored");
         for _ in 0..1000 {
             clock.advance();
         }
         assert_eq!(clock.step(), clock.total_steps());
         assert_eq!(clock.remaining_secs(), 0.0);
+        assert!(clock.is_past_end());
+        clock.start(1.0, STEP);
+        assert!(!clock.is_past_end());
+        clock.stop();
+        assert!(!clock.is_past_end());
     }
 
     #[test]

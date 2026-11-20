@@ -66,6 +66,9 @@ pub struct Agent {
     /// Cost of Transport (dimensionless `E / (m·g·d)`). NSGA-II objective 1
     /// is `1 / (1 + cost_of_transport)`.
     pub cost_of_transport: f32,
+    /// A parent walking again, whose score joins the average of its earlier
+    /// walks rather than entering the parent pool as a newcomer.
+    pub retest: bool,
 }
 
 impl Agent {
@@ -102,7 +105,25 @@ impl Agent {
             foot_transitions_per_sensor: 0.0,
             action_intensity: 0.0,
             cost_of_transport: 0.0,
+            retest: false,
         }
+    }
+}
+
+/// Hands out robot identities ([`AgentGenotype::id`]): every robot bred,
+/// drawn fresh or imported gets the next one when it joins a generation.
+/// Never reset, so an identity stays unique across restarts within a session
+/// (the hall of fame outlives runs).
+#[derive(Resource, Default)]
+pub struct RobotIds {
+    last: u64,
+}
+
+impl RobotIds {
+    /// The next identity; never 0, which marks a robot without one.
+    pub fn issue(&mut self) -> u64 {
+        self.last += 1;
+        self.last
     }
 }
 

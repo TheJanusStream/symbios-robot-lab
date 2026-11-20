@@ -36,8 +36,14 @@ fn main() {
             ui::hall_panel::render_hall_of_fame,
         ),
     )
-    .add_systems(Update, sync_time_scale)
-    .add_systems(FixedUpdate, start_evolving.before(EvolutionSystems));
+    .init_resource::<ui::keep::Keeper>()
+    .init_resource::<ui::keep::Arrival>()
+    .add_systems(Startup, ui::keep::restore_hall)
+    .add_systems(Update, (sync_time_scale, ui::keep::keep_hall))
+    .add_systems(
+        FixedUpdate,
+        (start_evolving, ui::keep::showcase_arrival).before(EvolutionSystems),
+    );
 
     // Dropping `.lsys` files into assets/morphologies/ needs a folder listing,
     // which a browser cannot give.

@@ -1,15 +1,16 @@
 //! The end of a generation: score every agent, merge them into the parent
 //! pool, breed the next generation and replace the robots.
 
-use crate::core::config::{BrainEncoding, LabConfig, Task};
+use crate::core::config::{BrainEncoding, LabConfig, Senses};
 use crate::core::descriptor::{ACTION_INTENSITY, DUTY_FACTOR, FEET, LENGTH, NUM_TRAITS};
 use crate::core::genome::AgentGenotype;
 use crate::core::morphology_pool::RuntimeMorphologyPool;
-use crate::core::population::{Agent, Population};
+use crate::core::population::{Agent, Population, RobotIds};
 use crate::simulation::clock::GenerationClock;
 use crate::simulation::fitness::{NUM_OBJECTIVES, evaluate_trajectory, trajectory_of};
-use crate::simulation::hall_of_fame::{HallOfFame, Immigrants};
+use crate::simulation::hall_of_fame::{Champion, HallOfFame, Immigrants};
 use crate::simulation::lifecycle::{DerivedBody, derive_blueprint, fresh_agent_from_pool};
+use crate::simulation::lineage::Lineage;
 use crate::simulation::parent_pool::ParentPool;
 use crate::simulation::rng::LabRng;
 use crate::simulation::telemetry::{GenerationSummary, Telemetry};
@@ -54,8 +55,8 @@ pub fn phenotype_of(agent: &Agent) -> Phenotype<AgentGenotype> {
 }
 
 /// When the generation clock reaches its last step: evaluate, merge into the
-/// parent pool, breed, despawn the old robots and install the new agents
-/// (spawned on the next fixed step). Waits instead while
+/// parent pool, record the pool's best in the lineage, breed, despawn the
+/// old robots and install the new agents (spawned on the next fixed step). Waits instead while
 /// `LabConfig::auto_restart` is off.
 #[expect(
     clippy::too_many_arguments,
@@ -72,6 +73,8 @@ pub fn end_generation(
     mut rng: ResMut<LabRng>,
     mut hall: ResMut<HallOfFame>,
     mut immigrants: ResMut<Immigrants>,
+    mut ids: ResMut<RobotIds>,
+    mut lineage: ResMut<Lineage>,
 ) {
     if !clock.is_finished() || !config.auto_restart {
         return;
@@ -80,9 +83,35 @@ pub fn end_generation(
     let evaluated: Vec<Phenotype<AgentGenotype>> =
         population.agents.iter().map(phenotype_of).collect();
     let summary = summarize(generation, &population.agents, &evaluated);
-    hall.offer(generation, &evaluated);
 
-    parent_pool.merge(&config, evaluated, rng.rng());
+    // Parents that walked again add the walk to their average (and update
+    // the hall of fame with it); the rest are newcomers to the pool.
+    let mut newcomers = Vec::with_capacity(evaluated.len());
+    for (agent, walk) in population.agents.iter().zip(evaluated) {
+        if !agent.retest {
+            newcomers.push(walk);
+        } else if let Some((fitness, walks)) = parent_pool.retest(&walk) {
+            hall.offer(Champion {
+                genotype: walk.genotype,
+                fitness: Some(fitness),
+                generation: Some(generation),
+                walks,
+            });
+        }
+    }
+    hall.offer_best(generation, &newcomers);
+    parent_pool.merge(&config, newcomers, rng.rng());
+    if let Some((best, walks)) = parent_pool.best() {
+        lineage.record(
+            generation,
+            Champion {
+                genotype: best.genotype.clone(),
+                fitness: Some(best.fitness),
+                generation: Some(generation),
+                walks,
+            },
+        );
+    }
     let summary = GenerationSummary {
         pool_best_fitness: parent_pool.best_fitness(),
         pool_size: parent_pool.len(),
@@ -102,7 +131,14 @@ pub fn end_generation(
     telemetry.record(summary);
 
     let arrivals = std::mem::take(&mut immigrants.0);
-    let next = breed_generation(&parent_pool, &config, &runtime_pool, arrivals, rng.rng());
+    let next = breed_generation(
+        &parent_pool,
+        &config,
+        &runtime_pool,
+        arrivals,
+        &mut ids,
+        rng.rng(),
+    );
 
     for agent in &population.agents {
         if let Some(root) = agent.root_entity {
@@ -159,28 +195,39 @@ fn summarize(
 
 /// The next generation: `immigrants` (genotypes sent into evolution, as new
 /// bodies to this run), offspring bred from the parent pool in their place,
-/// and a share of fresh bodies. A pool too small to breed from (all agents
-/// failed, say) is topped up with fresh bodies rather than shrinking the
-/// population.
+/// the best parents walking again (see [`LabConfig::retests`]), and a share
+/// of fresh bodies. A pool too small to breed from (all agents failed, say)
+/// is topped up with fresh bodies rather than shrinking the population.
+/// Every robot but the parents walking again gets a new identity.
 fn breed_generation(
     parent_pool: &ParentPool,
     config: &LabConfig,
     runtime_pool: &RuntimeMorphologyPool,
     immigrants: Vec<AgentGenotype>,
+    ids: &mut RobotIds,
     rng: &mut impl Rng,
 ) -> Vec<Agent> {
+    let retests = parent_pool.retest_candidates(config.retests_per_generation());
     let num_fresh = config.population_size / FRESH_SHARE;
-    let num_bred = config.population_size - num_fresh;
+    let num_bred = config.population_size - num_fresh - retests.len();
 
-    let mut offspring = arrivals(immigrants, config.population_size);
+    let mut offspring = arrivals(immigrants, config.population_size - retests.len());
     let num_offspring = num_bred.saturating_sub(offspring.len());
     offspring.extend((0..num_offspring).map_while(|_| parent_pool.breed(config, rng)));
-    let mut agents = derive_offspring(offspring, config.task, rng);
+    let num_children = offspring.len();
+    offspring.extend(retests);
+    let mut agents = derive_offspring(offspring, config.senses(), rng);
+    for agent in &mut agents[num_children..] {
+        agent.retest = true;
+    }
     while agents.len() < config.population_size {
-        match fresh_agent_from_pool(runtime_pool, config.brain, config.task, rng) {
+        match fresh_agent_from_pool(runtime_pool, config.brain, config.senses(), rng) {
             Some(agent) => agents.push(agent),
             None => break,
         }
+    }
+    for agent in agents.iter_mut().filter(|a| !a.retest) {
+        agent.genotype.id = ids.issue();
     }
     agents
 }
@@ -195,12 +242,13 @@ pub(crate) fn arrivals(mut immigrants: Vec<AgentGenotype>, room: usize) -> Vec<A
 }
 
 /// Derives the offspring's bodies in parallel and resizes each direct brain
-/// to its body's sensors and joints, and `task`'s inputs, where crossover,
-/// mutation or a change of task changed them. A HyperNEAT CPPN needs no
-/// resizing: it paints whatever body it gets.
+/// to its body's sensors and joints, and `senses`' inputs, where crossover,
+/// mutation or a change of senses changed them. A HyperNEAT CPPN needs no
+/// resizing: it paints whatever body it gets. A child that senses a bearing
+/// (the target task) has a steering reflex.
 pub(crate) fn derive_offspring(
     offspring: Vec<AgentGenotype>,
-    task: Task,
+    senses: Senses,
     rng: &mut impl Rng,
 ) -> Vec<Agent> {
     if offspring.is_empty() {
@@ -224,7 +272,12 @@ pub(crate) fn derive_offspring(
         .zip(derived)
         .map(|(mut child, derived)| match derived {
             Some(body) => {
-                let inputs = body.inputs.for_task(task).total();
+                // A child of robots bred to walk forward gets a steering
+                // reflex when the task turns to targets.
+                if senses.bearing && child.steering_gain == 0.0 {
+                    child.steering_gain = AgentGenotype::random_steering_gain(rng);
+                }
+                let inputs = body.inputs.with_senses(senses).total();
                 if child.encoding == BrainEncoding::Direct
                     && (inputs != child.controller.input_ids.len()
                         || body.num_outputs != child.controller.output_ids.len())
@@ -247,13 +300,8 @@ mod tests {
     use rand_pcg::Pcg64;
 
     fn walker(rng: &mut Pcg64) -> Agent {
-        let mut agent = fresh_agent(
-            MORPHOLOGY_POOL[2],
-            BrainEncoding::Direct,
-            Task::Forward,
-            rng,
-        )
-        .expect("hexapod derives");
+        let mut agent = fresh_agent(MORPHOLOGY_POOL[2], BrainEncoding::Direct, Senses::NONE, rng)
+            .expect("hexapod derives");
         agent.displacement = 1.0;
         agent.avg_velocity = 0.5;
         agent.com_bounce = 0.05;
@@ -289,6 +337,51 @@ mod tests {
         assert_eq!(phenotype_of(&hexapod).descriptor, vec![0.0; NUM_TRAITS]);
     }
 
+    /// The best parents walk again in children's places, keeping their
+    /// identities; every other robot gets a new one.
+    #[test]
+    fn the_best_parents_walk_again_among_new_robots() {
+        let mut rng = Pcg64::seed_from_u64(7);
+        let config = LabConfig {
+            population_size: 12,
+            retests: 3,
+            ..LabConfig::default()
+        };
+        let mut ids = RobotIds::default();
+        let parents: Vec<Phenotype<AgentGenotype>> = (0..6)
+            .map(|i| {
+                let mut agent = walker(&mut rng);
+                agent.genotype.id = ids.issue();
+                agent.displacement = 0.5 + 0.1 * i as f32;
+                phenotype_of(&agent)
+            })
+            .collect();
+        let mut pool = ParentPool::default();
+        pool.merge(&config, parents, &mut rng);
+        let best: Vec<u64> = pool.retest_candidates(3).iter().map(|g| g.id).collect();
+
+        let next = breed_generation(
+            &pool,
+            &config,
+            &RuntimeMorphologyPool::default(),
+            Vec::new(),
+            &mut ids,
+            &mut rng,
+        );
+        assert_eq!(next.len(), 12);
+        let retests: Vec<u64> = next
+            .iter()
+            .filter(|a| a.retest)
+            .map(|a| a.genotype.id)
+            .collect();
+        assert_eq!(retests, best);
+        let mut all: Vec<u64> = next.iter().map(|a| a.genotype.id).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 12, "identities repeat");
+        assert!(next.iter().filter(|a| !a.retest).all(|a| a.genotype.id > 6));
+    }
+
     #[test]
     fn a_pool_too_small_to_breed_is_topped_up_with_fresh_bodies() {
         let mut rng = Pcg64::seed_from_u64(2);
@@ -301,6 +394,7 @@ mod tests {
             &config,
             &RuntimeMorphologyPool::default(),
             Vec::new(),
+            &mut RobotIds::default(),
             &mut rng,
         );
         assert_eq!(next.len(), 12);
@@ -311,12 +405,12 @@ mod tests {
     fn offspring_keep_a_cppn_whatever_body_they_grow_and_resize_a_direct_brain() {
         let mut rng = Pcg64::seed_from_u64(3);
         let hexapod = |encoding, rng: &mut Pcg64| {
-            fresh_agent(MORPHOLOGY_POOL[2], encoding, Task::Forward, rng)
+            fresh_agent(MORPHOLOGY_POOL[2], encoding, Senses::NONE, rng)
                 .expect("hexapod derives")
                 .genotype
         };
         let crawler = |encoding, rng: &mut Pcg64| {
-            fresh_agent(MORPHOLOGY_POOL[4], encoding, Task::Forward, rng)
+            fresh_agent(MORPHOLOGY_POOL[4], encoding, Senses::NONE, rng)
                 .expect("crawler derives")
                 .genotype
         };
@@ -328,7 +422,7 @@ mod tests {
         direct_child.morphology = crawler_body.morphology.clone();
         let crawler_inputs = crawler_body.controller.input_ids.len();
 
-        let agents = derive_offspring(vec![cppn_child, direct_child], Task::Forward, &mut rng);
+        let agents = derive_offspring(vec![cppn_child, direct_child], Senses::NONE, &mut rng);
         assert_eq!(agents[0].genotype.controller.input_ids.len(), 7);
         assert_eq!(
             agents[1].genotype.controller.input_ids.len(),
@@ -344,13 +438,13 @@ mod tests {
         let parent = fresh_agent(
             MORPHOLOGY_POOL[2],
             BrainEncoding::Direct,
-            Task::Forward,
+            Senses::NONE,
             &mut rng,
         )
         .expect("hexapod derives")
         .genotype;
         let forward_inputs = parent.controller.input_ids.len();
-        let agents = derive_offspring(vec![parent], Task::Target, &mut rng);
+        let agents = derive_offspring(vec![parent], Senses::BEARING, &mut rng);
         assert_eq!(
             agents[0].genotype.controller.input_ids.len(),
             forward_inputs + crate::simulation::sensors::NUM_BEARING_INPUTS

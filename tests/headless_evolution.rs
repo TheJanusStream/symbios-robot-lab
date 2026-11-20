@@ -3,13 +3,16 @@
 
 use bevy::math::Vec2;
 use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
-use symbios_robot_lab::headless::HeadlessLab;
+use symbios_robot_lab::headless::{HeadlessLab, fresh_scores};
 use symbios_robot_lab::simulation::brain::RobotBrain;
-use symbios_robot_lab::simulation::hall_of_fame::{Showcase, ShowcaseRequest};
+use symbios_robot_lab::simulation::hall_of_fame::{
+    Entrant, LANE_SPACING, Lane, Showcase, ShowcaseRequest,
+};
 use symbios_robot_lab::simulation::lifecycle::SpawnRequest;
-use symbios_robot_lab::simulation::spawn::SHOWCASE_INDEX;
-use symbios_robot_lab::simulation::target::WalkTarget;
-use symbios_robot_lab::simulation::telemetry::GenerationSummary;
+use symbios_robot_lab::simulation::lineage::{Lineage, RACE_LANES};
+use symbios_robot_lab::simulation::spawn::{SHOWCASE_INDEX, showcase_index};
+use symbios_robot_lab::simulation::target::{TARGET_LEGS, WalkTarget};
+use symbios_robot_lab::simulation::telemetry::{GenerationSummary, Telemetry};
 use symbios_robot_lab::simulation::terrain::{Ground, ground_seed};
 
 /// A small, short run: enough robots and seconds to exercise everything.
@@ -210,37 +213,53 @@ fn champions_enter_the_hall_and_return_to_evolution() {
     );
 }
 
-/// A showcased champion walks on its own, unscored, and leaves evolution
-/// exactly as it would have been.
+/// A race of the run's generations: their champions walk on their own, side
+/// by side in lanes, unscored, and leave evolution exactly as it would have
+/// been.
 #[test]
-fn a_showcase_walks_without_touching_evolution() {
+fn a_race_of_generations_walks_without_touching_evolution() {
     let mut plain = HeadlessLab::new(small_config(21));
     let expected = plain.run(2, |_| {}).expect("finishes").history.clone();
+    // The lineage holds generation 0's best and the latest, generation 1's.
+    let lineage = plain.app_mut().world().resource::<Lineage>();
+    let race: Vec<_> = lineage.race(RACE_LANES).into_iter().cloned().collect();
+    let generations: Vec<usize> = race.iter().map(|m| m.generation).collect();
+    assert_eq!(generations, [0, 1]);
+    let entrants = race
+        .iter()
+        .map(|m| Entrant {
+            name: format!("Generation {}", m.generation),
+            genotype: m.champion.genotype.clone(),
+        })
+        .collect();
 
     let mut lab = HeadlessLab::new(small_config(21));
-    let champion = plain.hall_of_fame().champions()[0].genotype.clone();
     lab.app_mut()
         .world_mut()
-        .write_message(ShowcaseRequest(Some(champion)));
+        .write_message(ShowcaseRequest(entrants));
     let history = lab.run(2, |_| {}).expect("finishes").history.clone();
-    assert_eq!(history, expected, "the showcase changed the run");
+    assert_eq!(history, expected, "the race changed the run");
 
     let world = lab.app_mut().world_mut();
     let showcases = world
         .query_filtered::<(), bevy::prelude::With<Showcase>>()
         .iter(world)
         .count();
-    assert_eq!(showcases, 1);
-    let mut brains = world.query::<&RobotBrain>();
-    assert_eq!(
-        brains
-            .iter(world)
-            .filter(|b| b.agent_index == SHOWCASE_INDEX)
-            .count(),
-        1
-    );
-    // Dismissed, it leaves.
-    world.write_message(ShowcaseRequest(None));
+    assert_eq!(showcases, 2);
+    let mut lanes: Vec<(usize, Lane)> = world
+        .query::<(&RobotBrain, &Lane)>()
+        .iter(world)
+        .map(|(brain, lane)| (brain.agent_index, lane.clone()))
+        .collect();
+    lanes.sort_by_key(|(_, lane)| lane.lane);
+    assert_eq!(lanes.len(), 2);
+    assert_eq!(lanes[0].0, SHOWCASE_INDEX);
+    assert_eq!(lanes[1].0, showcase_index(1));
+    assert_eq!(lanes[1].1.name, "Generation 1");
+    let apart = lanes[0].1.start.distance(lanes[1].1.start);
+    assert!((apart - LANE_SPACING).abs() < 1e-4, "{apart}");
+    // Dismissed, they leave; one robot then walks alone in the first lane.
+    world.write_message(ShowcaseRequest::dismiss());
     lab.app_mut().update();
     let world = lab.app_mut().world_mut();
     let showcases = world
@@ -248,6 +267,16 @@ fn a_showcase_walks_without_touching_evolution() {
         .iter(world)
         .count();
     assert_eq!(showcases, 0);
+    let champion = race[1].champion.genotype.clone();
+    world.write_message(ShowcaseRequest::one("champion", champion));
+    lab.app_mut().update();
+    let world = lab.app_mut().world_mut();
+    let alone: Vec<usize> = world
+        .query::<(&RobotBrain, &Lane)>()
+        .iter(world)
+        .map(|(brain, _)| brain.agent_index)
+        .collect();
+    assert_eq!(alone, [SHOWCASE_INDEX]);
 }
 
 /// Under leg damage every robot walks with exactly one leg broken, and a
@@ -273,6 +302,179 @@ fn leg_damage_lames_every_robot_once() {
         .collect();
     assert!(!lamed.is_empty());
     assert!(lamed.iter().all(|&n| n == 1), "{lamed:?}");
+    assert_eq!(history, run(config(), 2));
+}
+
+/// With fewer parents, the best of them walk again each generation: the run
+/// repeats from its seed, and champions that walked again carry averages.
+#[test]
+fn the_best_parents_walk_again() {
+    let config = || LabConfig {
+        parent_share: 0.5,
+        retests: 8,
+        ..small_config(29)
+    };
+    let mut lab = HeadlessLab::new(config());
+    let history = lab.run(4, |_| {}).expect("finishes").history.clone();
+    assert!(history.iter().all(|s| s.evaluated == 12));
+    assert!(history.iter().skip(1).all(|s| s.pool_size <= 6));
+    assert!(
+        lab.hall_of_fame().champions().iter().any(|c| c.walks > 1),
+        "no champion walked again"
+    );
+    assert_eq!(history, run(config(), 4));
+}
+
+/// Fresh scores: a robot walks under new conditions, one score per
+/// condition, never below zero.
+#[test]
+fn fresh_scores_walk_a_robot_under_new_conditions() {
+    let mut lab = HeadlessLab::new(small_config(31));
+    lab.run(2, |_| {}).expect("finishes");
+    let champion = lab.hall_of_fame().champions()[0].clone();
+    let scores = fresh_scores(&small_config(31), &champion.genotype, 3);
+    assert_eq!(scores.len(), 3);
+    assert!(scores.iter().all(|s| s.is_finite() && *s >= 0.0));
+    assert_eq!(
+        scores,
+        fresh_scores(&small_config(31), &champion.genotype, 3)
+    );
+}
+
+/// By the end of a target-task generation every robot has walked through
+/// all its legs, each target on the other side of the last, with a steering
+/// reflex of its own.
+#[test]
+fn a_target_task_life_has_legs_on_both_sides() {
+    let mut lab = HeadlessLab::new(LabConfig {
+        task: Task::Target,
+        ..small_config(37)
+    });
+    lab.app_mut()
+        .world_mut()
+        .resource_mut::<LabConfig>()
+        .auto_restart = false;
+    lab.app_mut().world_mut().write_message(SpawnRequest);
+    for _ in 0..200 {
+        lab.app_mut().update();
+        let world = lab.app_mut().world();
+        if world
+            .resource::<symbios_robot_lab::simulation::clock::GenerationClock>()
+            .is_finished()
+        {
+            break;
+        }
+    }
+    let world = lab.app_mut().world_mut();
+    let mut robots = world.query::<(&RobotBrain, &WalkTarget)>();
+    let mut count = 0;
+    for (robot, target) in robots.iter(world) {
+        assert_eq!(target.leg, TARGET_LEGS);
+        let steering = robot.steering.as_ref().expect("a steering reflex");
+        assert!(steering.gain != 0.0 && steering.sides.len() == robot.outputs.len());
+        // The reflex scales outputs, but they stay what a motor can do.
+        assert!(
+            robot.outputs.iter().all(|o| (-1.0..=1.0).contains(o)),
+            "{:?}",
+            robot.outputs
+        );
+        count += 1;
+    }
+    assert_eq!(count, 12);
+    // The generation is over and waits (auto-advance off): the robots walk
+    // on, but their scores stay as the last step left them.
+    let scores = |lab: &HeadlessLab| -> Vec<f32> {
+        lab.population().agents.iter().map(|a| a.fitness).collect()
+    };
+    let at_the_end = scores(&lab);
+    for _ in 0..5 {
+        lab.app_mut().update();
+    }
+    assert_eq!(scores(&lab), at_the_end);
+}
+
+/// A showcased robot outlives generations: in the target task it starts its
+/// legs again with each one, toward new targets.
+#[test]
+fn a_showcased_robot_gets_new_targets_every_generation() {
+    let config = LabConfig {
+        task: Task::Target,
+        ..small_config(47)
+    };
+    let mut plain = HeadlessLab::new(config.clone());
+    plain.run(1, |_| {}).expect("finishes");
+    let champion = plain.hall_of_fame().champions()[0].genotype.clone();
+
+    let mut lab = HeadlessLab::new(config);
+    let world = lab.app_mut().world_mut();
+    world.write_message(ShowcaseRequest::one("champion", champion));
+    world.write_message(SpawnRequest);
+    // The showcased robot's target as each generation ends (the next may
+    // already have begun, and the robot started its legs again, still heading
+    // for its last target).
+    let mut ends: Vec<WalkTarget> = Vec::new();
+    for _ in 0..400 {
+        lab.app_mut().update();
+        let world = lab.app_mut().world_mut();
+        if world.resource::<Telemetry>().history.len() > ends.len() {
+            let mut robots = world.query::<(&RobotBrain, &WalkTarget)>();
+            let (_, target) = robots
+                .iter(world)
+                .find(|(brain, _)| brain.agent_index == SHOWCASE_INDEX)
+                .expect("the showcased robot walks on");
+            ends.push(*target);
+            if ends.len() == 2 {
+                break;
+            }
+        }
+    }
+    assert_eq!(ends.len(), 2, "two generations did not finish");
+    assert_ne!(ends[0].point, ends[1].point, "no new targets");
+}
+
+/// Pattern-generator brains drive robots through generations.
+#[test]
+fn pattern_generators_drive_robots_through_generations() {
+    let config = LabConfig {
+        brain: BrainEncoding::Supg,
+        ..small_config(41)
+    };
+    let history = run(config, 2);
+    assert!(history.iter().all(|s| s.evaluated == 12));
+    let furthest = history
+        .iter()
+        .map(|s| s.max_displacement)
+        .fold(0.0, f32::max);
+    assert!(
+        furthest > 0.05,
+        "no patterned robot moved 5 cm ({furthest} m)"
+    );
+}
+
+/// With the tilt sense every brain reads its body's lean, and a seed
+/// repeats the run.
+#[test]
+fn brains_can_sense_tilt() {
+    let config = || LabConfig {
+        tilt_sense: true,
+        terrain: Terrain::Hilly,
+        ..small_config(43)
+    };
+    let mut lab = HeadlessLab::new(config());
+    let history = lab.run(2, |_| {}).expect("finishes").history.clone();
+    for _ in 0..4 {
+        lab.app_mut().update();
+    }
+    let world = lab.app_mut().world_mut();
+    let mut brains = world.query::<&RobotBrain>();
+    let mut sensed = 0;
+    for brain in brains.iter(world) {
+        let at = brain.tilt_input.expect("a tilt input");
+        let tilt = &brain.sensor_inputs[at..at + 2];
+        assert!(tilt.iter().all(|t| (-1.0..=1.0).contains(t)), "{tilt:?}");
+        sensed += 1;
+    }
+    assert!(sensed > 0);
     assert_eq!(history, run(config(), 2));
 }
 

@@ -21,7 +21,7 @@
 //! Positions are in the robot's spawn frame (y up), centred on its bounding
 //! box and scaled so that its longest half-extent is 1.
 
-use crate::core::config::Task;
+use crate::core::config::Senses;
 use crate::simulation::body::modules_in_order;
 use crate::simulation::sensors::NUM_CLOCK_INPUTS;
 use crate::simulation::spawn::spawn_rotation;
@@ -140,12 +140,12 @@ impl Substrate {
     /// The substrate of a blueprint's body in its rest pose, walking
     /// forward.
     pub fn of_blueprint(blueprint: &RobotBlueprint) -> Self {
-        Self::of_body(blueprint, Task::Forward)
+        Self::of_body(blueprint, Senses::NONE)
     }
 
     /// The substrate of a blueprint's body in its rest pose for `task`: in
     /// the target task the bearing's two input neurons follow the sensors'.
-    pub fn of_body(blueprint: &RobotBlueprint, task: Task) -> Self {
+    pub fn of_body(blueprint: &RobotBlueprint, senses: Senses) -> Self {
         let frame = BodyFrame::of(blueprint);
         let mut imus = Vec::new();
         let mut touches = Vec::new();
@@ -190,8 +190,11 @@ impl Substrate {
         sensors.extend(ultrasonics);
         sensors.extend(&hinges);
         sensors.extend(&sliders);
-        if task.steers() {
+        if senses.bearing {
             sensors.extend(bearing_neurons(blueprint, &frame));
+        }
+        if senses.tilt {
+            sensors.extend(tilt_neurons(blueprint, &frame));
         }
         let mut joints = hinges;
         joints.extend(sliders);
@@ -208,23 +211,66 @@ impl Substrate {
 /// part that carries the brain (the first module), by its heading (its x
 /// axis) over the ground at rest.
 fn bearing_neurons(blueprint: &RobotBlueprint, frame: &BodyFrame) -> [Vec3; 2] {
+    let (at, heading, side) = root_axes(blueprint, frame);
+    [at + side * BEARING_SPREAD, at + heading * BEARING_SPREAD]
+}
+
+/// Where the tilt's neurons sit: above the bearing's (forward lean, then
+/// sideways lean), so the four get different weights.
+fn tilt_neurons(blueprint: &RobotBlueprint, frame: &BodyFrame) -> [Vec3; 2] {
+    let (at, heading, side) = root_axes(blueprint, frame);
+    let up = Vec3::Y * BEARING_SPREAD;
+    [
+        at + heading * BEARING_SPREAD + up,
+        at + side * BEARING_SPREAD + up,
+    ]
+}
+
+/// The part that carries the brain (the first module), in the frame: where
+/// it sits, its heading (its x axis) over the ground at rest, and the side a
+/// quarter turn from the heading toward where the bearing's sine is positive
+/// (see `crate::simulation::target::bearing`).
+fn root_axes(blueprint: &RobotBlueprint, frame: &BodyFrame) -> (Vec3, Vec3, Vec3) {
     let modules = modules_in_order(blueprint);
     let Some(&(_, root)) = modules.first() else {
-        return [
-            Vec3::new(0.0, 0.0, BEARING_SPREAD),
-            Vec3::X * BEARING_SPREAD,
-        ];
+        return (Vec3::ZERO, Vec3::X, Vec3::Z);
     };
     let (position, rotation) = root.transform;
-    let at = frame.point(position);
     let heading = frame.direction(rotation * Vec3::X);
     let heading = Vec3::new(heading.x, 0.0, heading.z)
         .try_normalize()
         .unwrap_or(Vec3::X);
-    // A quarter turn from the heading toward where the bearing's sine is
-    // positive (see `crate::simulation::target::bearing`).
     let side = Vec3::new(-heading.z, 0.0, heading.x);
-    [at + side * BEARING_SPREAD, at + heading * BEARING_SPREAD]
+    (frame.point(position), heading, side)
+}
+
+/// Each driven joint's place across the body, in output order (hinges, then
+/// sliders): where the part it moves sits along the root part's sideways
+/// axis, from -1 to 1, 1 for the part farthest out that way. A hip counts by its
+/// thigh, so a leg's joints share its side. The steering reflex scales each
+/// joint's swing by it. All 0 for a body with every part on its midline.
+pub fn joint_sides(blueprint: &RobotBlueprint) -> Vec<f32> {
+    let frame = BodyFrame::of(blueprint);
+    let (root, _, side) = root_axes(blueprint, &frame);
+    let is_hinge = |j: &&JointDefinition| matches!(j.joint_type, JointType::Hinge { .. });
+    let is_slider = |j: &&JointDefinition| matches!(j.joint_type, JointType::Prismatic { .. });
+    let moved = |j: &JointDefinition| {
+        blueprint
+            .modules
+            .get(&j.child_id)
+            .map_or(root, |m| frame.point(m.transform.0))
+    };
+    let hinges = blueprint.joints.iter().filter(is_hinge);
+    let sliders = blueprint.joints.iter().filter(is_slider);
+    let offsets: Vec<f32> = hinges
+        .chain(sliders)
+        .map(|joint| (moved(joint) - root).dot(side))
+        .collect();
+    let reach = offsets.iter().fold(0.0_f32, |reach, o| reach.max(o.abs()));
+    if reach < 1e-6 {
+        return vec![0.0; offsets.len()];
+    }
+    offsets.iter().map(|o| o / reach).collect()
 }
 
 /// A joint's position in the blueprint's frame: its anchor on the parent
@@ -512,7 +558,7 @@ mod tests {
         for i in 0..MORPHOLOGY_POOL.len() {
             let blueprint = preset(i);
             let forward = Substrate::of_blueprint(&blueprint);
-            let steering = Substrate::of_body(&blueprint, Task::Target);
+            let steering = Substrate::of_body(&blueprint, Senses::BEARING);
             assert_eq!(
                 steering.sensors[..forward.sensors.len()],
                 forward.sensors[..]
@@ -522,10 +568,60 @@ mod tests {
                 steering.sensors[forward.sensors.len() + 1],
             ];
             assert!((sin - cos).length() > 0.1, "preset {i}: {sin} {cos}");
-            let layout = InputLayout::of_blueprint(&blueprint).for_task(Task::Target);
+            let layout = InputLayout::of_blueprint(&blueprint).with_senses(Senses::BEARING);
             assert_eq!(steering.num_inputs(), layout.total(), "preset {i}");
             assert_eq!(paint_brain(&cppn, &steering).num_inputs(), layout.total());
         }
+    }
+
+    /// Legs on either side of a body read opposite sides, in [-1, 1]. The
+    /// quadruped stands in a "+" (front and back legs on the midline) and
+    /// grows legs of random length, so only its side legs read sides.
+    #[test]
+    fn joints_know_which_side_of_the_body_they_are_on() {
+        for i in [1, 2] {
+            let blueprint = preset(i);
+            let sides = joint_sides(&blueprint);
+            assert_eq!(
+                sides.len(),
+                Substrate::of_blueprint(&blueprint).joints.len()
+            );
+            assert!(sides.iter().all(|s| (-1.0..=1.0).contains(s)), "preset {i}");
+            let left = sides.iter().filter(|&&s| s > 0.2).count();
+            let right = sides.iter().filter(|&&s| s < -0.2).count();
+            assert!(left > 0 && right > 0, "preset {i}: {left} vs {right}");
+            assert!(sides.iter().any(|&s| (s.abs() - 1.0).abs() < 1e-6));
+        }
+        // The hexapod's three legs a side split evenly, every joint (hips
+        // too) taking its leg's side.
+        let hexapod = joint_sides(&preset(2));
+        let left = hexapod.iter().filter(|&&s| s > 0.0).count();
+        let right = hexapod.iter().filter(|&&s| s < 0.0).count();
+        assert_eq!((left, right), (9, 9), "{hexapod:?}");
+    }
+
+    /// The tilt adds two neurons after the bearing's, apart from all of
+    /// them, and a CPPN paints a brain of the layout's size.
+    #[test]
+    fn the_tilt_adds_two_neurons_of_its_own() {
+        let mut rng = Pcg64::seed_from_u64(10);
+        let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
+        let blueprint = preset(2);
+        let senses = Senses {
+            bearing: true,
+            tilt: true,
+        };
+        let bearing = Substrate::of_body(&blueprint, Senses::BEARING);
+        let both = Substrate::of_body(&blueprint, senses);
+        assert_eq!(both.sensors.len(), bearing.sensors.len() + 2);
+        let added = &both.sensors[bearing.sensors.len() - 2..];
+        for (i, a) in added.iter().enumerate() {
+            for b in &added[i + 1..] {
+                assert!((*a - *b).length() > 0.1, "{a} {b}");
+            }
+        }
+        let layout = InputLayout::of_blueprint(&blueprint).with_senses(senses);
+        assert_eq!(paint_brain(&cppn, &both).num_inputs(), layout.total());
     }
 
     #[test]

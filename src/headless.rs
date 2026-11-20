@@ -15,6 +15,8 @@ use crate::core::config::LabConfig;
 use crate::core::genome::AgentGenotype;
 use crate::core::population::Population;
 use crate::simulation::SimulationPlugin;
+use crate::simulation::clock::GenerationClock;
+use crate::simulation::generation::phenotype_of;
 use crate::simulation::hall_of_fame::{HallOfFame, Immigrants};
 use crate::simulation::lifecycle::SpawnRequest;
 use crate::simulation::physics::FIXED_HZ;
@@ -31,6 +33,11 @@ const STEPS_PER_UPDATE: u32 = 10;
 /// Updates allowed per generation beyond its own steps before a run is
 /// declared stalled (spawning and breeding take an update or two).
 const STALL_SLACK_UPDATES: usize = 16;
+/// Seeds of the conditions [`fresh_scores`] walks robots under, far from the
+/// seeds runs use.
+const FRESH_SEED_BASE: u64 = 0xF2E5_0000_0000;
+/// Clones of a robot walking each fresh condition, from different spots.
+const FRESH_CLONES: usize = 2;
 
 /// Why a headless run stopped early.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,4 +159,43 @@ impl HeadlessLab {
     pub fn app_mut(&mut self) -> &mut App {
         &mut self.app
     }
+}
+
+/// How `genotype` walks under `conditions` fresh conditions: for each, a new
+/// run with a seed of its own (so its own spots, ground, targets and broken
+/// legs, whatever `config` asks for) in which clones of the robot walk one
+/// generation. Returns each condition's mean walker fitness, a failed walk
+/// counting as 0.
+///
+/// The honest measure of a robot evolved under changing conditions: the
+/// score it was selected for came from one walk, and one walk can flatter.
+pub fn fresh_scores(config: &LabConfig, genotype: &AgentGenotype, conditions: usize) -> Vec<f32> {
+    (0..conditions as u64)
+        .map(|k| {
+            let mut lab = HeadlessLab::new(LabConfig {
+                population_size: FRESH_CLONES,
+                seed: Some(FRESH_SEED_BASE + k),
+                ..config.clone()
+            });
+            // One generation, kept for scoring instead of bred from.
+            lab.app.world_mut().resource_mut::<LabConfig>().auto_restart = false;
+            for _ in 0..FRESH_CLONES {
+                lab.send_into_evolution(genotype.clone());
+            }
+            lab.app.world_mut().write_message(SpawnRequest);
+            let steps = (f64::from(config.generation_duration) * FIXED_HZ).ceil() as usize;
+            for _ in 0..steps / STEPS_PER_UPDATE as usize + STALL_SLACK_UPDATES {
+                lab.app.update();
+                if lab.app.world().resource::<GenerationClock>().is_finished() {
+                    break;
+                }
+            }
+            let agents = &lab.population().agents;
+            let total: f32 = agents
+                .iter()
+                .map(|agent| phenotype_of(agent).fitness.max(0.0))
+                .sum();
+            total / agents.len().max(1) as f32
+        })
+        .collect()
 }

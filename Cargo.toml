@@ -73,6 +73,9 @@ rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 # Champions are saved and imported as JSON (simulation::hall_of_fame).
 serde_json = "1.0"
+# Share links carry a robot's JSON deflated (core::share). flate2, in the
+# graph through Bevy's image loading, already brings this version.
+miniz_oxide = "0.9"
 chrono = "0.4"
 rand_pcg = "0.9"
 
@@ -91,15 +94,19 @@ bevy_symbios = { version = "0.12", default-features = false, features = ["asset-
 # 0.3 compiles only with its `wasm_js` feature on; nothing else in the graph
 # turns it on.
 getrandom = { version = "0.3", features = ["wasm_js"] }
-# What ui::download uses to hand a file to the browser.
+# What ui::download uses to hand a file to the browser, and ui::keep to keep
+# the hall of fame in local storage and read a share link from the address.
 web-sys = { version = "0.3.82", features = [
     "Blob",
     "BlobPropertyBag",
     "Document",
     "Element",
+    "History",
     "HtmlAnchorElement",
     "HtmlElement",
+    "Location",
     "Node",
+    "Storage",
     "Url",
     "Window",
 ] }

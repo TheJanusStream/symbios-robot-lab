@@ -12,12 +12,14 @@ pub mod generation;
 pub mod hall_of_fame;
 pub mod hyperneat;
 pub mod lifecycle;
+pub mod lineage;
 pub mod metrics;
 pub mod parent_pool;
 pub mod physics;
 pub mod rng;
 pub mod sensors;
 pub mod spawn;
+pub mod supg;
 pub mod target;
 pub mod telemetry;
 pub mod terrain;
@@ -44,6 +46,7 @@ impl Plugin for SimulationPlugin {
             .insert_resource(Gravity(Vec3::NEG_Y * physics::GRAVITY))
             .init_resource::<LabConfig>()
             .init_resource::<Population>()
+            .init_resource::<crate::core::population::RobotIds>()
             .init_resource::<parent_pool::ParentPool>()
             .init_resource::<telemetry::Telemetry>()
             .init_resource::<clock::GenerationClock>()
@@ -52,6 +55,7 @@ impl Plugin for SimulationPlugin {
             .init_resource::<target::UserTarget>()
             .init_resource::<hall_of_fame::HallOfFame>()
             .init_resource::<hall_of_fame::Immigrants>()
+            .init_resource::<lineage::Lineage>()
             .add_message::<hall_of_fame::ShowcaseRequest>()
             .add_message::<lifecycle::SpawnRequest>()
             .add_systems(Startup, (arena::setup_arena, rng::init_rng))
@@ -63,9 +67,11 @@ impl Plugin for SimulationPlugin {
                     spawn::spawn_agents,
                     hall_of_fame::run_showcase,
                     clock::advance_clock,
+                    target::advance_targets,
                     target::follow_user_target,
                     metrics::check_explosion,
                     sensors::gather_sensor_inputs,
+                    sensors::sense_tilt,
                     brain::drive_motors,
                     metrics::apply_perturbations,
                     metrics::track_metrics,

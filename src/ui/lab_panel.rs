@@ -7,7 +7,7 @@ use symbios_robot_lab::core::population::Population;
 use symbios_robot_lab::simulation::clock::GenerationClock;
 use symbios_robot_lab::simulation::lifecycle::SpawnRequest;
 use symbios_robot_lab::simulation::parent_pool::ParentPool;
-use symbios_robot_lab::simulation::target::{TARGET_DISTANCE, UserTarget};
+use symbios_robot_lab::simulation::target::{TARGET_DISTANCE, TARGET_LEGS, UserTarget};
 use symbios_robot_lab::simulation::telemetry::Telemetry;
 
 /// Renders the main "Symbios Lab Control" egui window with algorithm selection,
@@ -119,9 +119,10 @@ pub fn render_ui(
             })
             .response
             .on_hover_text(
-                "Walk forward, or walk to a target: each brain reads the target's bearing \
-                 and the robot scores the ground it gains toward it. Robots bred from now on \
-                 are wired for the chosen task.",
+                "Walk forward, or walk to targets: each brain reads the target's bearing, \
+                 each robot has an evolved steering reflex, and after settling it gets new \
+                 targets off its heading on alternating sides, scoring the ground it gains \
+                 toward each. Robots bred from now on are wired for the chosen task.",
             );
         if config.task == Task::Target {
             ui.horizontal(|ui| {
@@ -136,8 +137,8 @@ pub fn render_ui(
             ui.label(match user_target.0 {
                 Some(point) => format!("Every robot walks to ({:.1}, {:.1})", point.x, point.y),
                 None => format!(
-                    "Each robot's target lies {TARGET_DISTANCE:.0} m from it, in a direction \
-                     drawn anew each generation"
+                    "Targets appear {TARGET_DISTANCE:.0} m off each robot's heading, \
+                     {TARGET_LEGS} after settling, on alternating sides"
                 ),
             });
         } else {
@@ -149,6 +150,35 @@ pub fn render_ui(
         );
         ui.add(egui::Slider::new(&mut config.population_size, 2..=100).text("Population Size"));
         ui.add(egui::Slider::new(&mut config.mutation_rate, 0.0..=1.0).text("Mutation Rate"));
+        if matches!(
+            config.algorithm,
+            GeneticAlgorithm::Nsga2 | GeneticAlgorithm::SimpleGA | GeneticAlgorithm::DominatedNovelty
+        ) {
+            ui.add(
+                egui::Slider::new(&mut config.parent_share, 0.1..=1.0)
+                    .text("Parents kept")
+                    .custom_formatter(|share, _| format!("{:.0}%", share * 100.0))
+                    .custom_parser(|text| {
+                        text.trim_end_matches('%').trim().parse::<f64>().ok().map(|p| p / 100.0)
+                    }),
+            )
+            .on_hover_text(
+                "The share of each generation kept as parents. Fewer parents breed from the \
+                 best more often, more keep more kinds of body: half (the default) beat \
+                 keeping them all in measured runs.",
+            );
+        }
+        if config.algorithm != GeneticAlgorithm::NoveltySearch {
+            ui.add(egui::Slider::new(&mut config.retests, 0..=16).text("Parents walking again"))
+                .on_hover_text(
+                    "The best parents walk again each generation, in children's places, and \
+                     are judged by their average. Every robot walks from its own spot (and on \
+                     new ground, toward new targets), so one walk can flatter it; walking \
+                     again keeps the parents and the hall of fame honest. Worth it on rough or \
+                     hilly ground, toward targets or with leg damage; on the flat floor it \
+                     costs children. At most a quarter of the population.",
+                );
+        }
         ui.add_enabled(
             !config.protects_new_bodies(),
             egui::Checkbox::new(&mut config.vary_body_or_brain, "Vary body or brain"),
@@ -176,11 +206,17 @@ pub fn render_ui(
              0 = off. Higher values stress-test gait stability; winners will be \
              perturbation-robust.",
         );
-        ui.checkbox(&mut config.leg_damage, "Leg damage")
+        ui.checkbox(&mut config.tilt_sense, "Sense tilt").on_hover_text(
+            "Brains also sense how far the body leans forward and sideways: the IMU feels \
+             jolts, not lean. Measured, it did not help on hills or flat ground. Robots bred \
+             from now on get it.",
+        );
+        ui.checkbox(&mut config.leg_damage, "Leg damage (experimental)")
             .on_hover_text(
                 "Every robot walks with one leg broken (its joints limp), a different leg each \
-             generation: evolution favours gaits that survive losing any leg. Takes effect \
-             from the next generation.",
+                 generation. Measured, it has not bred robots that cope better with a broken \
+                 leg than robots bred intact (they coped worse); pattern-generator brains cope \
+                 best. Takes effect from the next generation.",
             );
         ui.checkbox(&mut config.auto_restart, "Auto-advance generations");
 

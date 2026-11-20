@@ -17,7 +17,7 @@ use crate::simulation::fitness::{
 };
 use crate::simulation::rng::LabRng;
 use crate::simulation::sensors::{AgentTouch, hinge_angle, in_contact};
-use crate::simulation::target::{WalkTarget, progress};
+use crate::simulation::target::WalkTarget;
 use crate::simulation::terrain::Ground;
 use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
@@ -160,6 +160,7 @@ pub fn check_explosion(
     parts: Query<(&Position, &LinearVelocity), Without<RobotBrain>>,
     mut population: ResMut<Population>,
     ground: Res<Ground>,
+    clock: Res<GenerationClock>,
 ) {
     // Bypass change detection: a changed Population means "respawn" to the
     // spawner, and an exploded robot must stay gone until the next generation.
@@ -185,8 +186,12 @@ pub fn check_explosion(
                 })
             });
         if exploded {
-            agent.exploded = true;
-            agent.fitness = 0.0;
+            // Past the generation's end the walk is over and keeps its
+            // score; the robot still goes before it can upset the physics.
+            if !clock.is_past_end() {
+                agent.exploded = true;
+                agent.fitness = 0.0;
+            }
             agent.body_entity = None;
             if let Some(root) = agent.root_entity.take() {
                 commands.entity(root).try_despawn();
@@ -219,7 +224,7 @@ pub fn track_metrics(
     time: Res<Time>,
     ground: Res<Ground>,
 ) {
-    if !clock.is_settled() {
+    if !clock.is_settled() || clock.is_past_end() {
         return;
     }
     let dt = time.delta_secs();
@@ -336,7 +341,9 @@ pub fn update_fitness_scores(
         return;
     }
     let window_step = clock.step() - clock.settle_step();
-    if !window_step.is_multiple_of(FITNESS_CALC_INTERVAL) && !clock.is_finished() {
+    if clock.is_past_end()
+        || !window_step.is_multiple_of(FITNESS_CALC_INTERVAL) && !clock.is_finished()
+    {
         return;
     }
 
@@ -353,7 +360,7 @@ pub fn update_fitness_scores(
             (position.0, forward)
         });
         let forward_displacement = match targets.get(body) {
-            Ok(target) => progress(base_pos, position.0, target.point),
+            Ok(target) => target.ground_gained(position.0),
             Err(_) => (position.0 - base_pos).dot(forward).max(0.0),
         };
         let forward_displacement = if forward_displacement.is_finite() {
