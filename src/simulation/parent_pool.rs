@@ -111,11 +111,6 @@ impl ParentPool {
             .unwrap_or(0)
     }
 
-    /// Individuals on the Pareto front (rank 0).
-    pub fn front_size(&self) -> usize {
-        self.ranks.iter().filter(|&&r| r == 0).count()
-    }
-
     /// The descriptor space the archives are laid out in.
     pub fn descriptor_space(&self) -> QdDescriptor {
         self.space
@@ -184,18 +179,39 @@ impl ParentPool {
             .collect()
     }
 
-    /// `(objective_0, objective_1, rank)` per walking individual. Failed
-    /// robots' `f32::MIN` objectives are finite but would stretch a plot's
-    /// axes to the limits of `f32`.
-    pub fn objective_data(&self) -> Vec<(f32, f32, usize)> {
-        self.pool
+    /// The pool's walking individuals in NSGA-II's two scored objectives,
+    /// each with its front in those two (0 = the Pareto front), for the
+    /// panel's plot.
+    ///
+    /// The fronts are worked out here from the objectives, not read from the
+    /// selection's ranks: those belong to whichever algorithm merged the pool
+    /// last (every other algorithm leaves them all 0, so right after a switch
+    /// back to NSGA-II the whole pool would plot as the front), and while new
+    /// bodies are protected they count youth as a third objective, which
+    /// keeps young bodies inside the plotted front on NSGA-II's. Failed
+    /// robots are left out: their `f32::MIN` objectives would stretch the
+    /// plot's axes to the limits of `f32`.
+    pub fn pareto_plot(&self) -> Vec<ParetoPoint> {
+        let walking: Vec<(&Phenotype<AgentGenotype>, [f32; 2])> = self
+            .pool
             .iter()
-            .zip(self.ranks.iter())
-            .filter(|(pheno, _)| is_viable(pheno))
-            .filter_map(|(pheno, &rank)| {
-                let o0 = *pheno.objectives.first()?;
-                let o1 = *pheno.objectives.get(1)?;
-                (o0.is_finite() && o1.is_finite()).then_some((o0, o1, rank))
+            .filter(|p| is_viable(p))
+            .filter_map(|p| {
+                let fitness = *p.objectives.first()?;
+                let efficiency = *p.objectives.get(1)?;
+                (fitness.is_finite() && efficiency.is_finite())
+                    .then_some((p, [fitness, efficiency]))
+            })
+            .collect();
+        let points: Vec<[f32; 2]> = walking.iter().map(|&(_, point)| point).collect();
+        walking
+            .iter()
+            .zip(fronts(&points))
+            .map(|(&(pheno, [fitness, efficiency]), front)| ParetoPoint {
+                fitness,
+                efficiency,
+                front,
+                body_age: pheno.genotype.body_age,
             })
             .collect()
     }
@@ -721,6 +737,46 @@ impl ParentPool {
     }
 }
 
+/// A walking individual in the Pareto plot (see [`ParentPool::pareto_plot`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParetoPoint {
+    /// Walker fitness, NSGA-II's first objective.
+    pub fitness: f32,
+    /// `1 / (1 + Cost of Transport)`, its second.
+    pub efficiency: f32,
+    /// Its front in those two objectives: 0 for the Pareto front, 1 for the
+    /// front once the Pareto front is set aside, and so on.
+    pub front: usize,
+    /// Generations its body has been in the pool.
+    pub body_age: u32,
+}
+
+/// Each point's non-dominated front, maximizing every coordinate: 0 for the
+/// points no other point dominates, 1 for those only front 0 dominates, and
+/// so on. Equal points share a front. Quadratic per front, for the pool's
+/// few dozen points.
+pub fn fronts<const D: usize>(points: &[[f32; D]]) -> Vec<usize> {
+    let dominates = |a: &[f32; D], b: &[f32; D]| {
+        a.iter().zip(b).all(|(x, y)| x >= y) && a.iter().zip(b).any(|(x, y)| x > y)
+    };
+    let mut front_of = vec![usize::MAX; points.len()];
+    let mut front = 0;
+    let mut left: Vec<usize> = (0..points.len()).collect();
+    while !left.is_empty() {
+        let (current, rest): (Vec<usize>, Vec<usize>) = left.iter().partition(|&&i| {
+            !left
+                .iter()
+                .any(|&j| j != i && dominates(&points[j], &points[i]))
+        });
+        for &i in &current {
+            front_of[i] = front;
+        }
+        left = rest;
+        front += 1;
+    }
+    front_of
+}
+
 /// Whether a phenotype is a robot that walked: failed robots score `f32::MIN`
 /// (see [`crate::simulation::generation::phenotype_of`]), and a NaN would
 /// poison every distance and comparison it entered.
@@ -835,7 +891,87 @@ mod tests {
         let batch = vec![phenotype(0.6, [0.5, 0.5], &mut rng), failed(&mut rng)];
         pool.merge(&config(GeneticAlgorithm::Nsga2, 8), batch, &mut rng);
         assert_eq!(pool.len(), 2);
-        assert_eq!(pool.objective_data(), vec![(0.6, 0.5, 0)]);
+        let plot = pool.pareto_plot();
+        assert_eq!(plot.len(), 1);
+        assert_eq!(
+            (plot[0].fitness, plot[0].efficiency, plot[0].front),
+            (0.6, 0.5, 0)
+        );
+    }
+
+    #[test]
+    fn fronts_peel_the_non_dominated_layers() {
+        let points = [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.5, 0.5],
+            [0.4, 0.4],
+            [0.1, 0.1],
+            [0.5, 0.5],
+        ];
+        assert_eq!(fronts(&points), vec![0, 0, 0, 1, 2, 0]);
+        // A third coordinate lifts a point that two would bury.
+        let points = [[0.9, 0.9, 0.0], [0.5, 0.5, 1.0], [0.4, 0.4, 0.5]];
+        assert_eq!(fronts(&points), vec![0, 0, 1]);
+        assert!(fronts::<2>(&[]).is_empty());
+    }
+
+    /// Fitness and efficiency pairs, as a batch of phenotypes.
+    fn scored(pairs: &[(f32, f32)], rng: &mut Pcg64) -> Vec<Phenotype<AgentGenotype>> {
+        pairs
+            .iter()
+            .map(|&(fitness, efficiency)| {
+                let mut p = phenotype(fitness, [0.5, 0.5], rng);
+                p.objectives = vec![fitness, efficiency];
+                p
+            })
+            .collect()
+    }
+
+    /// Whatever algorithm filled the pool (here SimpleGA, which ranks
+    /// nobody), the plot draws the front of the plotted objectives. Before
+    /// the plot worked out its own fronts, every point read rank 0 here.
+    #[test]
+    fn the_plot_draws_the_front_whoever_filled_the_pool() {
+        let mut rng = Pcg64::seed_from_u64(14);
+        let batch = scored(&[(0.9, 0.2), (0.3, 0.8), (0.5, 0.5), (0.2, 0.1)], &mut rng);
+        for algorithm in [GeneticAlgorithm::SimpleGA, GeneticAlgorithm::Nsga2] {
+            let mut pool = ParentPool::default();
+            pool.merge(&config(algorithm, 8), batch.clone(), &mut rng);
+            let mut plot: Vec<(f32, usize)> = pool
+                .pareto_plot()
+                .iter()
+                .map(|p| (p.fitness, p.front))
+                .collect();
+            plot.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert_eq!(
+                plot,
+                vec![(0.2, 1), (0.3, 0), (0.5, 0), (0.9, 0)],
+                "{algorithm}"
+            );
+        }
+    }
+
+    /// Protection keeps a young body that walks worse on NSGA-II's front;
+    /// the plot, drawing fitness and efficiency, puts it off the front and
+    /// says how young it is.
+    #[test]
+    fn a_body_kept_for_its_youth_plots_off_the_front() {
+        let mut rng = Pcg64::seed_from_u64(15);
+        let mut batch = scored(&[(0.9, 0.6), (0.5, 0.5)], &mut rng);
+        batch[0].genotype.body_age = 5;
+        let mut pool = ParentPool::default();
+        pool.merge(&protected(8), batch, &mut rng);
+        assert!(
+            pool.ranks.iter().all(|&rank| rank == 0),
+            "both on NSGA-II's front"
+        );
+        let young = pool
+            .pareto_plot()
+            .into_iter()
+            .find(|p| p.body_age == 0)
+            .expect("plotted");
+        assert_eq!(young.front, 1);
     }
 
     #[test]
@@ -848,7 +984,7 @@ mod tests {
         let config = config(GeneticAlgorithm::Nsga2, 6);
         pool.merge(&config, batch, &mut rng);
         assert_eq!(pool.len(), 6);
-        assert!(pool.front_size() >= 1);
+        assert!(pool.pareto_plot().iter().any(|p| p.front == 0));
         assert!(pool.breed(&config, &mut rng).is_some());
     }
 

@@ -218,10 +218,12 @@ pub fn render_ui(
             .on_hover_text("The best score any finished generation has given a robot");
         match config.algorithm {
             GeneticAlgorithm::Nsga2 => {
-                ui.label(format!(
-                    "Pareto front: {} individuals",
-                    telemetry.pareto_front_size
-                ));
+                let front = parent_pool
+                    .pareto_plot()
+                    .iter()
+                    .filter(|p| p.front == 0)
+                    .count();
+                ui.label(format!("Pareto front: {front} individuals"));
             }
             GeneticAlgorithm::MapElites => {
                 ui.label(format!("Archive cells: {}", parent_pool.archive_size()));
@@ -384,8 +386,13 @@ pub fn render_ui(
 
         // Algorithm-specific visualizations
         if config.algorithm == GeneticAlgorithm::Nsga2 {
-            // Pareto front scatter plot
-            let obj_data = parent_pool.objective_data();
+            // Pareto front scatter plot: the fronts are the plotted
+            // objectives' own (see `ParentPool::pareto_plot`).
+            let plot = parent_pool.pareto_plot();
+            let obj_data: Vec<(f32, f32, usize)> = plot
+                .iter()
+                .map(|p| (p.fitness, p.efficiency, p.front))
+                .collect();
             if obj_data.len() >= 2 {
                 ui.separator();
                 ui.label("Pareto front (walker_fitness vs 1/(1+CoT)):");
@@ -511,25 +518,28 @@ pub fn render_ui(
                 );
 
                 // Hover tooltip
+                let protecting = config.protects_new_bodies();
                 if let Some(hover_pos) = response.hover_pos() {
-                    let closest = obj_data
+                    let closest = plot
                         .iter()
-                        .map(|&(o0, o1, rank)| {
-                            let sp = to_screen(o0, o1);
-                            let dist = sp.distance(hover_pos);
-                            (dist, o0, o1, rank)
-                        })
+                        .map(|p| (to_screen(p.fitness, p.efficiency).distance(hover_pos), p))
                         .min_by(|a, b| a.0.total_cmp(&b.0));
-
-                    if let Some((dist, o0, o1, rank)) = closest
+                    if let Some((dist, point)) = closest
                         && dist < 15.0
                     {
                         response.on_hover_ui(|ui| {
-                            ui.label(format!("Fitness: {:.3}", o0));
-                            ui.label(format!("Efficiency: {:.3}", o1));
-                            ui.label(format!("Rank: {}", rank));
+                            ui.label(format!("Fitness: {:.3}", point.fitness));
+                            ui.label(format!("Efficiency: {:.3}", point.efficiency));
+                            ui.label(format!("Front: {}", point.front));
+                            if protecting {
+                                ui.label(format!("Body age: {} generations", point.body_age));
+                            }
                         });
                     }
+                }
+                if protecting {
+                    ui.label("Selection also favours young bodies: robots off this front may stay for their youth (hover for a body's age).")
+                        .on_hover_text("Protecting new bodies makes youth NSGA-II's third objective; the plot shows the other two");
                 }
             }
         } // end Nsga2

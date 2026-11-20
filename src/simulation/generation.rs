@@ -100,7 +100,6 @@ pub fn end_generation(
         summary.exploded,
     );
     telemetry.record(summary);
-    telemetry.pareto_front_size = parent_pool.front_size();
 
     let arrivals = std::mem::take(&mut immigrants.0);
     let next = breed_generation(&parent_pool, &config, &runtime_pool, arrivals, rng.rng());

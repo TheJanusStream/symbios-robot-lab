@@ -37,8 +37,6 @@ pub struct Telemetry {
     pub history: Vec<GenerationSummary>,
     /// Best walker fitness seen at any moment of the run.
     pub best_all_time: f32,
-    /// Individuals on the NSGA-II Pareto front (rank 0) after the last merge.
-    pub pareto_front_size: usize,
 }
 
 impl Telemetry {
