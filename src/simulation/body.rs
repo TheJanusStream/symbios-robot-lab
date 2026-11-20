@@ -39,6 +39,8 @@ pub struct SpawnedJoint {
     pub joint_type: JointType,
     /// The limit that configured the joint's range and motor, if any.
     pub limit: Option<AxisLimit>,
+    /// The part the joint carries (each part hangs from one joint).
+    pub child_module: ModuleId,
 }
 
 /// A sensor mounted on a spawned part.
@@ -169,6 +171,7 @@ pub fn spawn_body(
             entity,
             joint_type: def.joint_type,
             limit: limit.copied(),
+            child_module: def.child_id,
         });
     }
 
@@ -179,6 +182,44 @@ pub fn spawn_body(
         sensors,
         total_mass,
     }
+}
+
+/// The body's legs: the leg number of every part on one. A leg is the chain
+/// of parts from a foot (a part nothing hangs from) up to, not including, the
+/// first part that carries more than one (or the root): a hexapod's six
+/// hip-and-knee legs, a millipede's pairs of legs but not its spine. Legs are
+/// numbered in the order of their feet's module ids. A joint is on the leg
+/// of the part it carries.
+pub fn legs(blueprint: &RobotBlueprint) -> bevy::platform::collections::HashMap<ModuleId, usize> {
+    use bevy::platform::collections::HashMap;
+    let mut children: HashMap<ModuleId, usize> = HashMap::default();
+    let mut parent: HashMap<ModuleId, ModuleId> = HashMap::default();
+    for joint in &blueprint.joints {
+        *children.entry(joint.parent_id).or_default() += 1;
+        parent.insert(joint.child_id, joint.parent_id);
+    }
+    let mut feet: Vec<ModuleId> = blueprint
+        .modules
+        .keys()
+        .filter(|id| !children.contains_key(*id) && Some(**id) != blueprint.root_module)
+        .copied()
+        .collect();
+    feet.sort_unstable();
+    let mut leg_of = HashMap::default();
+    for (leg, &foot) in feet.iter().enumerate() {
+        let mut part = foot;
+        loop {
+            leg_of.insert(part, leg);
+            let Some(&up) = parent.get(&part) else {
+                break;
+            };
+            if Some(up) == blueprint.root_module || children.get(&up).copied().unwrap_or(0) > 1 {
+                break;
+            }
+            part = up;
+        }
+    }
+    leg_of
 }
 
 /// The blueprint's modules in `ModuleId` order: the order parts spawn in,
@@ -333,6 +374,59 @@ fn spawn_joint(commands: &mut Commands, spec: JointSpec) -> Entity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::presets::MORPHOLOGY_POOL;
+    use crate::simulation::lifecycle::derive_blueprint;
+    use symbios_robot::SensorType;
+
+    /// Driven joints (hinges and sliders) per leg.
+    fn driven_per_leg(blueprint: &RobotBlueprint) -> Vec<usize> {
+        let leg_of = legs(blueprint);
+        let mut counts = vec![0; leg_of.values().max().map_or(0, |&n| n + 1)];
+        for joint in &blueprint.joints {
+            let driven = matches!(
+                joint.joint_type,
+                JointType::Hinge { .. } | JointType::Prismatic { .. }
+            );
+            if let (true, Some(&leg)) = (driven, leg_of.get(&joint.child_id)) {
+                counts[leg] += 1;
+            }
+        }
+        counts
+    }
+
+    /// The hexapod's 18 driven joints are its six legs' three each.
+    #[test]
+    fn a_hexapod_has_six_legs_of_three_joints() {
+        let hexapod = derive_blueprint(MORPHOLOGY_POOL[2], 1, 3).expect("derives");
+        assert_eq!(hexapod.num_outputs, 18);
+        assert_eq!(driven_per_leg(&hexapod.blueprint), vec![3; 6]);
+    }
+
+    /// Every preset's feet (its touch sensors) end legs that a driven joint
+    /// moves, so breaking any of them lames the robot.
+    #[test]
+    fn every_foot_ends_a_driven_leg() {
+        for (i, source) in MORPHOLOGY_POOL.iter().enumerate() {
+            let body = derive_blueprint(source, 1, 3).expect("derives").blueprint;
+            let leg_of = legs(&body);
+            let driven = driven_per_leg(&body);
+            for (id, module) in &body.modules {
+                if module
+                    .sensors
+                    .iter()
+                    .any(|s| s.sensor_type == SensorType::Touch)
+                {
+                    let leg = leg_of
+                        .get(id)
+                        .unwrap_or_else(|| panic!("preset {i}: foot {id} on no leg"));
+                    assert!(
+                        driven[*leg] > 0,
+                        "preset {i}: foot {id}'s leg drives nothing"
+                    );
+                }
+            }
+        }
+    }
 
     fn limit(axis: Vec3, min: f32) -> AxisLimit {
         AxisLimit {

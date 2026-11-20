@@ -37,6 +37,18 @@ impl LabRng {
     }
 }
 
+/// A seed for something a generation sets up apart from the evolution (its
+/// ground, its targets): the run's seed and the generation mixed by
+/// SplitMix64's finalizer, so neighbouring generations get unrelated seeds,
+/// the same seed repeats them, and drawing them leaves [`LabRng`]'s stream
+/// alone. `stream` tells the uses apart.
+pub fn generation_seed(run_seed: u64, generation: usize, stream: u64) -> u64 {
+    let mut z = (run_seed ^ stream) ^ (generation as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 /// Inserts the run's [`LabRng`] at startup from [`LabConfig::seed`], unless
 /// one is already there, and logs the seed so the run can be repeated.
 pub fn init_rng(mut commands: Commands, config: Res<LabConfig>, existing: Option<Res<LabRng>>) {

@@ -1,3 +1,4 @@
+use crate::core::descriptor::BodyTraits;
 use crate::core::genome::AgentGenotype;
 use bevy::prelude::*;
 use symbios_robot::RobotBlueprint;
@@ -17,6 +18,9 @@ pub struct Agent {
     pub body_entity: Option<Entity>,
     /// Cached blueprint from L-System derivation, avoids re-parsing at spawn.
     pub cached_blueprint: Option<RobotBlueprint>,
+    /// The body's feet and length, the body traits of its descriptor. Kept
+    /// after spawning takes the blueprint.
+    pub body_traits: Option<BodyTraits>,
     /// Set when the physics blew the robot apart this generation. An exploded
     /// agent is despawned at once and scores as dominated by every intact
     /// one, whatever its metrics read before the explosion.
@@ -66,8 +70,8 @@ pub struct Agent {
 
 impl Agent {
     /// Fresh-individual constructor: zeroed metrics, no spawned entities,
-    /// optional cached blueprint. Avoids 14 boilerplate `: 0.0` lines at
-    /// every call site that creates a new agent.
+    /// optional cached blueprint (whose body traits it measures). Avoids 14
+    /// boilerplate `: 0.0` lines at every call site that creates a new agent.
     pub fn fresh(
         genotype: AgentGenotype,
         num_motors: usize,
@@ -79,6 +83,7 @@ impl Agent {
             num_motors,
             root_entity: None,
             body_entity: None,
+            body_traits: cached_blueprint.as_ref().map(BodyTraits::of),
             cached_blueprint,
             exploded: false,
             mass: 0.0,

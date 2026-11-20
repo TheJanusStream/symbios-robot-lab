@@ -17,6 +17,8 @@ use crate::simulation::fitness::{
 };
 use crate::simulation::rng::LabRng;
 use crate::simulation::sensors::{AgentTouch, hinge_angle, in_contact};
+use crate::simulation::target::{WalkTarget, progress};
+use crate::simulation::terrain::Ground;
 use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -29,9 +31,9 @@ const EXPLOSION_RADIUS: f32 = 6.0;
 /// a working robot's parts stay well under it, a breaking joint's pass it
 /// within a few steps.
 const MAX_PART_SPEED: f32 = 50.0;
-/// A body below this height has fallen through the floor.
+/// A body this far below the ground under it has fallen through.
 const MIN_Y: f32 = -5.0;
-/// A body above this height has been launched into the sky.
+/// A body this far above the ground under it has been launched into the sky.
 const MAX_Y: f32 = 10.0;
 /// Recompute each robot's fitness every N steps of the measured window (and
 /// always on the generation's last step).
@@ -157,6 +159,7 @@ pub fn check_explosion(
     brains: Query<(&RobotBrain, &Position)>,
     parts: Query<(&Position, &LinearVelocity), Without<RobotBrain>>,
     mut population: ResMut<Population>,
+    ground: Res<Ground>,
 ) {
     // Bypass change detection: a changed Population means "respawn" to the
     // spawner, and an exploded robot must stay gone until the next generation.
@@ -169,9 +172,10 @@ pub fn check_explosion(
             continue;
         };
         let body_pos = body_position.0;
+        let height = body_pos.y - ground.height_at(body_pos.x, body_pos.z);
         let exploded = !body_pos.is_finite()
-            || body_pos.y < MIN_Y
-            || body_pos.y > MAX_Y
+            || height < MIN_Y
+            || height > MAX_Y
             || brain.parts.iter().any(|&part| {
                 parts.get(part).is_ok_and(|(position, velocity)| {
                     !position.0.is_finite()
@@ -194,6 +198,10 @@ pub fn check_explosion(
 
 /// Accumulates every robot's metrics for one fixed step of the measured
 /// window. Runs after `drive_motors`, so it sees this step's commands.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Bevy system: each parameter is a query or resource it reads"
+)]
 pub fn track_metrics(
     mut brains: Query<(
         Entity,
@@ -209,6 +217,7 @@ pub fn track_metrics(
     colliding: Query<&CollidingEntities>,
     clock: Res<GenerationClock>,
     time: Res<Time>,
+    ground: Res<Ground>,
 ) {
     if !clock.is_settled() {
         return;
@@ -288,8 +297,11 @@ pub fn track_metrics(
         let up = (rotation.0 * Vec3::NEG_Y).dot(Vec3::Y);
         metrics.up_alignment_sum += up;
         metrics.up_alignment_sq_sum += up * up;
-        metrics.height_sum += position.0.y;
-        metrics.height_sq_sum += position.0.y * position.0.y;
+        // Height above the ground under the body, so walking over a hill
+        // neither lifts the posture score nor counts as bounce.
+        let height = position.0.y - ground.height_at(position.0.x, position.0.z);
+        metrics.height_sum += height;
+        metrics.height_sq_sum += height * height;
 
         metrics.touch_contact_ticks += contact_counts.get(&brain_entity).copied().unwrap_or(0);
         metrics.foot_transition_count += transition_counts.get(&brain_entity).copied().unwrap_or(0);
@@ -299,21 +311,24 @@ pub fn track_metrics(
 
 /// Updates every robot's fitness and metric fields on its agent. Fitness is
 /// 0 while settling; when the measured window opens, the body's pose becomes
-/// the baseline displacement is measured from.
+/// the baseline displacement is measured from: forward along the way it then
+/// faces or, in the target task, the progress it makes toward its target.
 pub fn update_fitness_scores(
     mut brains: Query<(
+        Entity,
         &RobotBrain,
         &AgentMetrics,
         &Position,
         &Rotation,
         &mut FitnessBaseline,
     )>,
+    targets: Query<&WalkTarget>,
     mut population: ResMut<Population>,
     clock: Res<GenerationClock>,
 ) {
     let population = population.bypass_change_detection();
     if !clock.is_settled() {
-        for (brain, ..) in &brains {
+        for (_, brain, ..) in &brains {
             if let Some(agent) = population.agents.get_mut(brain.agent_index) {
                 agent.fitness = 0.0;
             }
@@ -326,7 +341,7 @@ pub fn update_fitness_scores(
     }
 
     let window_secs = clock.window_elapsed_secs();
-    for (brain, metrics, position, rotation, mut baseline) in &mut brains {
+    for (body, brain, metrics, position, rotation, mut baseline) in &mut brains {
         let (base_pos, forward) = *baseline.0.get_or_insert_with(|| {
             let forward = rotation.0 * Vec3::X;
             let forward_xz = Vec3::new(forward.x, 0.0, forward.z);
@@ -337,7 +352,10 @@ pub fn update_fitness_scores(
             };
             (position.0, forward)
         });
-        let forward_displacement = (position.0 - base_pos).dot(forward).max(0.0);
+        let forward_displacement = match targets.get(body) {
+            Ok(target) => progress(base_pos, position.0, target.point),
+            Err(_) => (position.0 - base_pos).dot(forward).max(0.0),
+        };
         let forward_displacement = if forward_displacement.is_finite() {
             forward_displacement
         } else {

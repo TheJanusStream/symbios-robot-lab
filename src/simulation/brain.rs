@@ -1,7 +1,7 @@
 //! The brain: one feed-forward network per robot, evaluated from its sensor
 //! inputs, whose outputs drive the robot's joint motors.
 
-use crate::core::config::BrainEncoding;
+use crate::core::config::{BrainEncoding, Task};
 use crate::core::genome::AgentGenotype;
 use crate::simulation::clock::GenerationClock;
 use crate::simulation::hyperneat::{CPPN_INPUTS, CPPN_OUTPUTS, Substrate, paint_brain};
@@ -44,6 +44,11 @@ pub struct DrivenJoint {
     pub max: f32,
     /// The most its motor may exert (N·m for a hinge, N for a slider).
     pub max_effort: f32,
+    /// The leg it is on (see [`crate::simulation::body::legs`]), if any.
+    pub leg: Option<usize>,
+    /// Broken: its motor lets go, and the joint swings or slides freely
+    /// within its limits.
+    pub broken: bool,
 }
 
 impl DrivenJoint {
@@ -85,11 +90,14 @@ impl From<EvaluatorError> for BrainError {
     }
 }
 
-/// The network that drives `blueprint`'s body: the controller itself for a
-/// direct encoding, the network its CPPN paints onto the body for HyperNEAT.
+/// The network that drives `blueprint`'s body at `task`: the controller
+/// itself for a direct encoding (sized for the task when it was bred), the
+/// network its CPPN paints onto the body, with the task's inputs, for
+/// HyperNEAT.
 pub fn compile_brain(
     genotype: &AgentGenotype,
     blueprint: &RobotBlueprint,
+    task: Task,
 ) -> Result<FeedforwardNetwork, BrainError> {
     let mut genome = genotype.controller.clone();
     genome.break_cycles();
@@ -101,7 +109,7 @@ pub fn compile_brain(
             if (inputs, outputs) != (CPPN_INPUTS, CPPN_OUTPUTS) {
                 return Err(BrainError::CppnShape { inputs, outputs });
             }
-            Ok(paint_brain(&compiled, &Substrate::of_blueprint(blueprint)))
+            Ok(paint_brain(&compiled, &Substrate::of_body(blueprint, task)))
         }
     }
 }
@@ -123,9 +131,59 @@ pub struct RobotBrain {
     pub prismatic_joints: Vec<DrivenJoint>,
     /// The robot's parts other than the body, for the explosion check.
     pub parts: Vec<Entity>,
+    /// Frequency (Hz) of the clock this brain reads, from the genotype.
+    pub rhythm_hz: f32,
 }
 
 impl RobotBrain {
+    fn driven_joints(&self) -> impl Iterator<Item = &DrivenJoint> {
+        self.hinge_joints.iter().chain(&self.prismatic_joints)
+    }
+
+    /// The legs with a driven joint, in order.
+    pub fn legs(&self) -> Vec<usize> {
+        let mut legs: Vec<usize> = self.driven_joints().filter_map(|j| j.leg).collect();
+        legs.sort_unstable();
+        legs.dedup();
+        legs
+    }
+
+    /// The legs with a broken joint, in order.
+    pub fn broken_legs(&self) -> Vec<usize> {
+        let mut legs: Vec<usize> = self
+            .driven_joints()
+            .filter(|j| j.broken)
+            .filter_map(|j| j.leg)
+            .collect();
+        legs.sort_unstable();
+        legs.dedup();
+        legs
+    }
+
+    /// Breaks every driven joint on `leg`: the leg hangs limp.
+    pub fn break_leg(&mut self, leg: usize) {
+        for joint in self
+            .hinge_joints
+            .iter_mut()
+            .chain(&mut self.prismatic_joints)
+        {
+            if joint.leg == Some(leg) {
+                joint.broken = true;
+            }
+        }
+    }
+
+    /// Mends every broken joint.
+    pub fn mend(&mut self) {
+        for joint in self
+            .hinge_joints
+            .iter_mut()
+            .chain(&mut self.prismatic_joints)
+        {
+            joint.broken = false;
+        }
+    }
+
     /// Joints the brain drives (hinges, then sliders).
     pub fn driven_joint_count(&self) -> usize {
         self.hinge_joints.len() + self.prismatic_joints.len()
@@ -157,7 +215,9 @@ impl RobotBrain {
 ///
 /// Position control: each output picks a target within its joint's range
 /// and avian's motor (a critically damped 5 Hz spring by default) servoes
-/// the joint there. The motor's velocity target stays 0. Driving the
+/// the joint there. Every driven joint's motor runs unless the joint is
+/// broken: avian makes joints with their motors off, and a hinge without a
+/// blueprint limit used to stay that way, a "motor" that never moved. The motor's velocity target stays 0. Driving the
 /// velocity target instead, as the lab once did, leaves that spring pulling
 /// every joint back to rest, so a full-speed command held a hinge only about
 /// 0.19 rad from it.
@@ -188,6 +248,7 @@ pub fn drive_motors(
                 joint.motor.target_position = driven.target(output);
                 joint.motor.target_velocity = 0.0;
                 joint.motor.max_torque = driven.max_effort;
+                joint.motor.enabled = !driven.broken;
             }
         }
         let slider_outputs = outputs.iter().skip(hinge_joints.len());
@@ -196,7 +257,7 @@ pub fn drive_motors(
                 joint.motor.target_position = driven.target(output);
                 joint.motor.target_velocity = 0.0;
                 joint.motor.max_force = driven.max_effort;
-                joint.motor.enabled = true;
+                joint.motor.enabled = !driven.broken;
             }
         }
     }

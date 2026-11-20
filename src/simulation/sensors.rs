@@ -3,19 +3,19 @@
 //! and velocities, which are current at every fixed step (a `Transform` or
 //! `GlobalTransform` read here would be up to a frame stale).
 
+use crate::core::config::Task;
 use crate::simulation::brain::RobotBrain;
 use crate::simulation::clock::GenerationClock;
 use crate::simulation::collision::GameLayer;
+use crate::simulation::target::{WalkTarget, bearing};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use symbios_robot::{JointType, RobotBlueprint, SensorType};
 
-/// Clock inputs: `sin` and `cos` of a [`CLOCK_HZ`] oscillation, phase 0 when
-/// the generation's robots spawn.
+/// Clock inputs: `sin` and `cos` of an oscillation at the robot's own
+/// evolved frequency ([`RobotBrain::rhythm_hz`]), phase 0 when the
+/// generation's robots spawn.
 pub const NUM_CLOCK_INPUTS: usize = 2;
-/// The clock inputs' frequency (Hz), near a legged animal's stride rate. The
-/// lab first fed `sin(t)` of seconds, a 6.3 s period, slower than any gait.
-pub const CLOCK_HZ: f32 = 1.0;
 /// Each IMU contributes 6 values: the part's linear and angular acceleration
 /// (world frame), see [`AgentImu`].
 pub const INPUTS_PER_IMU: usize = 6;
@@ -29,12 +29,17 @@ pub const INPUTS_PER_JOINT: usize = 1;
 /// Each prismatic joint contributes 1 value: its extension across its
 /// range, on the same scale as a hinge's angle.
 pub const INPUTS_PER_SLIDER: usize = 1;
+/// In the target task, two more inputs: the sine and cosine of the target's
+/// angle from the robot's heading (see [`bearing`]).
+pub const NUM_BEARING_INPUTS: usize = 2;
 /// Maximum range of the ultrasonic sensor (m). Nothing in range reads 0.
 pub const ULTRASONIC_MAX_RANGE: f32 = 8.0;
 
 /// How a body's sensors map onto its brain's inputs. Layout:
 /// `[clock (2), imu (6 each), touch (1 each), ultrasonic (1 each),
-/// hinge angle (1 each), slider extension (1 each)]`.
+/// hinge angle (1 each), slider extension (1 each), target bearing (2, in
+/// the target task)]`. The bearing comes last so that a direct brain keeps
+/// its other inputs' meanings when the task changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InputLayout {
     pub imus: usize,
@@ -42,6 +47,8 @@ pub struct InputLayout {
     pub ultrasonics: usize,
     pub hinges: usize,
     pub sliders: usize,
+    /// Whether the brain reads a target's bearing.
+    pub steering: bool,
 }
 
 impl InputLayout {
@@ -70,8 +77,23 @@ impl InputLayout {
         layout
     }
 
+    /// This layout for `task`: with the bearing inputs if it steers.
+    pub fn for_task(self, task: Task) -> Self {
+        Self {
+            steering: task.steers(),
+            ..self
+        }
+    }
+
     /// Total number of brain inputs.
     pub fn total(&self) -> usize {
+        let bearing = if self.steering { NUM_BEARING_INPUTS } else { 0 };
+        self.bearing_offset() + bearing
+    }
+
+    /// Where the bearing inputs start (if the brain reads them): after every
+    /// sensor's.
+    pub fn bearing_offset(&self) -> usize {
         self.slider_offset(self.sliders)
     }
 
@@ -234,14 +256,16 @@ pub fn gather_sensor_inputs(
     sliders: Query<(&AgentSlider, &PrismaticJoint)>,
     parts: Query<(&Position, &Rotation, &LinearVelocity, &AngularVelocity)>,
     contacts: Query<&CollidingEntities>,
+    targets: Query<(Entity, &WalkTarget)>,
     spatial_query: SpatialQuery,
     clock: Res<GenerationClock>,
     time: Res<Time>,
 ) {
-    let phase = std::f32::consts::TAU * CLOCK_HZ * clock.elapsed_secs();
+    let elapsed = clock.elapsed_secs();
     let dt = time.delta_secs();
     let inv_dt = if dt > 0.0 { 1.0 / dt } else { 0.0 };
     for mut brain in &mut brains {
+        let phase = clock_phase(brain.rhythm_hz, elapsed);
         brain.sensor_inputs.fill(0.0);
         if brain.sensor_inputs.len() >= NUM_CLOCK_INPUTS {
             brain.sensor_inputs[0] = phase.sin();
@@ -338,6 +362,26 @@ pub fn gather_sensor_inputs(
             sensor.normalized(extension),
         );
     }
+
+    // The target task: the bearing from the brain's own part.
+    for (body, target) in &targets {
+        let Ok((position, rotation, _, _)) = parts.get(body) else {
+            continue;
+        };
+        let reading = bearing(position.0, rotation.0, target.point);
+        if let Ok(mut brain) = brains.get_mut(body)
+            && let Some(slot) = brain
+                .sensor_inputs
+                .get_mut(target.input_offset..target.input_offset + NUM_BEARING_INPUTS)
+        {
+            slot.copy_from_slice(&reading);
+        }
+    }
+}
+
+/// The clock's phase (rad) after `elapsed_secs` at `rhythm_hz`.
+pub fn clock_phase(rhythm_hz: f32, elapsed_secs: f32) -> f32 {
+    std::f32::consts::TAU * rhythm_hz * elapsed_secs
 }
 
 fn write_input(brains: &mut Query<&mut RobotBrain>, brain: Entity, offset: usize, value: f32) {
@@ -353,6 +397,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_clock_turns_once_per_period_of_the_robots_rhythm() {
+        // At 2 Hz the clock completes a turn every half second.
+        assert!((clock_phase(2.0, 0.5) - std::f32::consts::TAU).abs() < 1e-5);
+        assert!((clock_phase(2.0, 0.125).sin() - 1.0).abs() < 1e-5);
+        assert_eq!(clock_phase(0.5, 0.0), 0.0);
+    }
+
+    #[test]
     fn the_layout_packs_sensor_kinds_in_order() {
         let layout = InputLayout {
             imus: 1,
@@ -360,6 +412,7 @@ mod tests {
             ultrasonics: 2,
             hinges: 8,
             sliders: 3,
+            steering: false,
         };
         assert_eq!(layout.imu_offset(0), 2);
         assert_eq!(layout.touch_offset(0), 8);
@@ -367,6 +420,12 @@ mod tests {
         assert_eq!(layout.joint_offset(0), 14);
         assert_eq!(layout.slider_offset(0), 22);
         assert_eq!(layout.total(), 25);
+        // The target task appends the bearing, leaving the rest in place.
+        let steering = layout.for_task(Task::Target);
+        assert_eq!(steering.bearing_offset(), 25);
+        assert_eq!(steering.slider_offset(0), 22);
+        assert_eq!(steering.total(), 27);
+        assert_eq!(steering.for_task(Task::Forward), layout);
     }
 
     #[test]

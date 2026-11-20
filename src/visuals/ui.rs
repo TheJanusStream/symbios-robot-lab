@@ -1,3 +1,4 @@
+use crate::visuals::targets::TargetPlacement;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_panorbit_camera::PanOrbitCamera;
@@ -9,15 +10,17 @@ pub struct CameraTarget {
     pub agent_index: Option<usize>,
 }
 
-/// Handles click-to-follow: raycasts from mouse position to find the clicked robot.
+/// Handles click-to-follow: raycasts from mouse position to find the clicked
+/// robot. Clicks place the target instead while target placement is on.
 pub fn click_to_follow(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     brains: Query<(&RobotBrain, &Transform)>,
+    placement: Res<TargetPlacement>,
     mut target: ResMut<CameraTarget>,
 ) {
-    if !mouse.just_pressed(MouseButton::Left) {
+    if !mouse.just_pressed(MouseButton::Left) || placement.active {
         return;
     }
 

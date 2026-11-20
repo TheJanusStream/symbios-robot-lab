@@ -9,6 +9,7 @@ pub mod clock;
 pub mod collision;
 pub mod fitness;
 pub mod generation;
+pub mod hall_of_fame;
 pub mod hyperneat;
 pub mod lifecycle;
 pub mod metrics;
@@ -17,7 +18,9 @@ pub mod physics;
 pub mod rng;
 pub mod sensors;
 pub mod spawn;
+pub mod target;
 pub mod telemetry;
+pub mod terrain;
 
 use crate::core::config::LabConfig;
 use crate::core::morphology_pool::RuntimeMorphologyPool;
@@ -45,14 +48,22 @@ impl Plugin for SimulationPlugin {
             .init_resource::<telemetry::Telemetry>()
             .init_resource::<clock::GenerationClock>()
             .init_resource::<RuntimeMorphologyPool>()
+            .init_resource::<terrain::Ground>()
+            .init_resource::<target::UserTarget>()
+            .init_resource::<hall_of_fame::HallOfFame>()
+            .init_resource::<hall_of_fame::Immigrants>()
+            .add_message::<hall_of_fame::ShowcaseRequest>()
             .add_message::<lifecycle::SpawnRequest>()
             .add_systems(Startup, (arena::setup_arena, rng::init_rng))
             .add_systems(
                 FixedUpdate,
                 (
                     lifecycle::start_new_run,
+                    terrain::lay_ground,
                     spawn::spawn_agents,
+                    hall_of_fame::run_showcase,
                     clock::advance_clock,
+                    target::follow_user_target,
                     metrics::check_explosion,
                     sensors::gather_sensor_inputs,
                     brain::drive_motors,

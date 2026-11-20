@@ -4,7 +4,8 @@
 //!
 //! Every brain input except the clock sits at a point on the body: an IMU's
 //! six channels just around the IMU, a touch or distance sensor at its
-//! mount, a hinge's angle at the hinge, a slider's extension at the slider. Each driven joint carries two neurons
+//! mount, a hinge's angle at the hinge, a slider's extension at the slider,
+//! and in the target task the target's bearing by the body's root part. Each driven joint carries two neurons
 //! where it sits: an interneuron and the motor neuron whose output drives the
 //! joint. The CPPN is asked, for every pair of neurons, whether and how
 //! strongly they connect given where they sit, and for every joint, its
@@ -20,6 +21,7 @@
 //! Positions are in the robot's spawn frame (y up), centred on its bounding
 //! box and scaled so that its longest half-extent is 1.
 
+use crate::core::config::Task;
 use crate::simulation::body::modules_in_order;
 use crate::simulation::sensors::NUM_CLOCK_INPUTS;
 use crate::simulation::spawn::spawn_rotation;
@@ -87,6 +89,11 @@ const LOCALITY_SEED_SLOPE: f32 = 2.5;
 /// its angular ones on the negative side. Without the offsets all six would
 /// sit at one point and get the same weights.
 const IMU_CHANNEL_SPREAD: f32 = 0.25;
+/// How far from the body's root part the bearing's input neurons sit (in the
+/// target task): the cosine's (how far ahead the target lies) toward the
+/// robot's heading, the sine's (how far to the side) toward the side where
+/// the sine is positive. Apart, they get different weights.
+const BEARING_SPREAD: f32 = 0.25;
 /// Smallest half-extent the frame divides by, for a degenerate body.
 const MIN_FRAME_SCALE: f32 = 1e-3;
 
@@ -130,8 +137,15 @@ pub struct Substrate {
 }
 
 impl Substrate {
-    /// The substrate of a blueprint's body in its rest pose.
+    /// The substrate of a blueprint's body in its rest pose, walking
+    /// forward.
     pub fn of_blueprint(blueprint: &RobotBlueprint) -> Self {
+        Self::of_body(blueprint, Task::Forward)
+    }
+
+    /// The substrate of a blueprint's body in its rest pose for `task`: in
+    /// the target task the bearing's two input neurons follow the sensors'.
+    pub fn of_body(blueprint: &RobotBlueprint, task: Task) -> Self {
         let frame = BodyFrame::of(blueprint);
         let mut imus = Vec::new();
         let mut touches = Vec::new();
@@ -176,6 +190,9 @@ impl Substrate {
         sensors.extend(ultrasonics);
         sensors.extend(&hinges);
         sensors.extend(&sliders);
+        if task.steers() {
+            sensors.extend(bearing_neurons(blueprint, &frame));
+        }
         let mut joints = hinges;
         joints.extend(sliders);
         Self { sensors, joints }
@@ -185,6 +202,29 @@ impl Substrate {
     pub fn num_inputs(&self) -> usize {
         NUM_CLOCK_INPUTS + self.sensors.len()
     }
+}
+
+/// Where the bearing's sine and cosine neurons sit: beside and ahead of the
+/// part that carries the brain (the first module), by its heading (its x
+/// axis) over the ground at rest.
+fn bearing_neurons(blueprint: &RobotBlueprint, frame: &BodyFrame) -> [Vec3; 2] {
+    let modules = modules_in_order(blueprint);
+    let Some(&(_, root)) = modules.first() else {
+        return [
+            Vec3::new(0.0, 0.0, BEARING_SPREAD),
+            Vec3::X * BEARING_SPREAD,
+        ];
+    };
+    let (position, rotation) = root.transform;
+    let at = frame.point(position);
+    let heading = frame.direction(rotation * Vec3::X);
+    let heading = Vec3::new(heading.x, 0.0, heading.z)
+        .try_normalize()
+        .unwrap_or(Vec3::X);
+    // A quarter turn from the heading toward where the bearing's sine is
+    // positive (see `crate::simulation::target::bearing`).
+    let side = Vec3::new(-heading.z, 0.0, heading.x);
+    [at + side * BEARING_SPREAD, at + heading * BEARING_SPREAD]
 }
 
 /// A joint's position in the blueprint's frame: its anchor on the parent
@@ -459,6 +499,32 @@ mod tests {
                 "preset {i}"
             );
             assert_eq!(substrate.joints.len(), derived.num_outputs, "preset {i}");
+        }
+    }
+
+    /// The target task adds the bearing's two neurons after the sensors',
+    /// apart from each other and by the body's root part, so a fresh CPPN
+    /// paints them a brain of the steering layout's size.
+    #[test]
+    fn steering_adds_the_bearing_neurons_apart() {
+        let mut rng = Pcg64::seed_from_u64(9);
+        let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
+        for i in 0..MORPHOLOGY_POOL.len() {
+            let blueprint = preset(i);
+            let forward = Substrate::of_blueprint(&blueprint);
+            let steering = Substrate::of_body(&blueprint, Task::Target);
+            assert_eq!(
+                steering.sensors[..forward.sensors.len()],
+                forward.sensors[..]
+            );
+            let [sin, cos] = [
+                steering.sensors[forward.sensors.len()],
+                steering.sensors[forward.sensors.len() + 1],
+            ];
+            assert!((sin - cos).length() > 0.1, "preset {i}: {sin} {cos}");
+            let layout = InputLayout::of_blueprint(&blueprint).for_task(Task::Target);
+            assert_eq!(steering.num_inputs(), layout.total(), "preset {i}");
+            assert_eq!(paint_brain(&cppn, &steering).num_inputs(), layout.total());
         }
     }
 

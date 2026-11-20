@@ -230,10 +230,17 @@ pub const fn walker_fitness() -> WalkerFitness {
     )
 }
 
-/// `(fitness, objectives, descriptor)` for a trajectory:
+/// Objectives [`evaluate_trajectory`] scores: walker fitness and the inverse
+/// Cost of Transport.
+pub const NUM_OBJECTIVES: usize = 2;
+
+/// `(fitness, objectives, gait)` for a trajectory:
 /// - **fitness**: the walker composite;
-/// - **objectives**: `[walker_fitness, inverse_CoT]` for NSGA-II;
-/// - **descriptor**: `[support_duty_factor, action_intensity_norm]` for QD.
+/// - **objectives**: `[walker_fitness, inverse_CoT]` for NSGA-II
+///   ([`NUM_OBJECTIVES`] of them);
+/// - **gait**: `[support_duty_factor, action_intensity_norm]`, the gait
+///   traits of the quality-diversity descriptor
+///   ([`crate::core::descriptor`]).
 pub fn evaluate_trajectory(t: &AgentTrajectory) -> (f32, Vec<f32>, Vec<f32>) {
     let fitness = walker_fitness().score(t);
     let objectives = vec![fitness, InverseCoT.score(t)];

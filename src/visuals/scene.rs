@@ -2,8 +2,14 @@
 
 use bevy::{post_process::bloom::Bloom, prelude::*, render::view::Tonemapping};
 use bevy_panorbit_camera::PanOrbitCamera;
+use bevy_symbios_ground::HeightMapMeshBuilder;
 use std::f32::consts::TAU;
 use symbios_robot_lab::simulation::arena::{ArenaFloor, FLOOR_SIZE};
+use symbios_robot_lab::simulation::terrain::Ground;
+
+/// Marker for the drawn patch of terrain.
+#[derive(Component)]
+pub struct GroundMesh;
 
 pub fn setup_scene(mut commands: Commands) {
     commands.spawn((
@@ -29,6 +35,37 @@ pub fn setup_scene(mut commands: Commands) {
         // lab leaves out of its bundle; this one computes its curve.
         Tonemapping::SomewhatBoringDisplayTransform,
         Bloom::NATURAL,
+    ));
+}
+
+/// Redraws the patch of terrain whenever the simulation lays new ground, from
+/// the same height map as its collider; flat ground draws none.
+pub fn draw_ground(
+    mut commands: Commands,
+    ground: Res<Ground>,
+    drawn: Query<Entity, With<GroundMesh>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !ground.is_changed() {
+        return;
+    }
+    for entity in &drawn {
+        commands.entity(entity).despawn();
+    }
+    let Some((map, origin)) = ground.patch() else {
+        return;
+    };
+    commands.spawn((
+        GroundMesh,
+        Mesh3d(meshes.add(HeightMapMeshBuilder::new().build(map))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.16, 0.17, 0.2),
+            perceptual_roughness: 0.9,
+            ..default()
+        })),
+        Transform::from_translation(origin),
+        Name::new("Ground patch mesh"),
     ));
 }
 

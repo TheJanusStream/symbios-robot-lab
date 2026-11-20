@@ -12,8 +12,10 @@
 //! ```
 
 use crate::core::config::LabConfig;
+use crate::core::genome::AgentGenotype;
 use crate::core::population::Population;
 use crate::simulation::SimulationPlugin;
+use crate::simulation::hall_of_fame::{HallOfFame, Immigrants};
 use crate::simulation::lifecycle::SpawnRequest;
 use crate::simulation::physics::FIXED_HZ;
 use crate::simulation::rng::LabRng;
@@ -124,6 +126,21 @@ impl HeadlessLab {
 
     pub fn population(&self) -> &Population {
         self.app.world().resource::<Population>()
+    }
+
+    /// The session's champions so far.
+    pub fn hall_of_fame(&self) -> &HallOfFame {
+        self.app.world().resource::<HallOfFame>()
+    }
+
+    /// Sends a robot into evolution: it joins the next run's first
+    /// generation (or the next generation bred, mid-run).
+    pub fn send_into_evolution(&mut self, genotype: AgentGenotype) {
+        self.app
+            .world_mut()
+            .resource_mut::<Immigrants>()
+            .0
+            .push(genotype);
     }
 
     /// The seed the run drew from (set or drawn at startup).

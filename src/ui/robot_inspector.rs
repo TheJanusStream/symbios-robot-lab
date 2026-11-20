@@ -9,6 +9,8 @@ use symbios_robot_lab::simulation::sensors::{
     AgentImu, AgentJoint, AgentSlider, AgentTouch, AgentUltrasonic, INPUTS_PER_IMU, InputLayout,
     NUM_CLOCK_INPUTS,
 };
+use symbios_robot_lab::simulation::spawn::SHOWCASE_INDEX;
+use symbios_robot_lab::simulation::target::WalkTarget;
 
 /// Renders an inspector window for the currently selected robot.
 /// Only visible when `CameraTarget.agent_index` is `Some`.
@@ -19,20 +21,22 @@ use symbios_robot_lab::simulation::sensors::{
 pub fn render_robot_inspector(
     mut contexts: EguiContexts,
     target: Res<CameraTarget>,
-    brains: Query<(Entity, &RobotBrain, &AgentMetrics)>,
+    mut brains: Query<(Entity, &mut RobotBrain, Option<&AgentMetrics>)>,
     population: Res<Population>,
     imus: Query<&AgentImu>,
     touches: Query<&AgentTouch>,
     ultrasonics: Query<&AgentUltrasonic>,
     joints: Query<&AgentJoint>,
     sliders: Query<&AgentSlider>,
+    targets: Query<&WalkTarget>,
 ) {
     let Some(agent_index) = target.agent_index else {
         return;
     };
 
-    let Some((brain_entity, brain, live)) =
-        brains.iter().find(|(_, b, _)| b.agent_index == agent_index)
+    let Some((brain_entity, mut brain, live)) = brains
+        .iter_mut()
+        .find(|(_, b, _)| b.agent_index == agent_index)
     else {
         return;
     };
@@ -41,7 +45,12 @@ pub fn render_robot_inspector(
         return;
     };
 
-    egui::Window::new(format!("Agent {agent_index}"))
+    let title = if agent_index == SHOWCASE_INDEX {
+        "Showcase".to_string()
+    } else {
+        format!("Agent {agent_index}")
+    };
+    egui::Window::new(title)
         .default_width(260.0)
         .show(ctx, |ui| {
             // --- Fitness & Metrics ---
@@ -108,24 +117,53 @@ pub fn render_robot_inspector(
                     });
             }
 
-            // --- Live brain metrics ---
-            ui.separator();
-            ui.heading("Live");
-            let ticks = live.metric_ticks.max(1) as f32;
-            egui::Grid::new("live_grid")
-                .num_columns(2)
-                .spacing([8.0, 2.0])
-                .show(ui, |ui| {
-                    ui.label("Energy:");
-                    ui.label(format!("{:.1}", live.energy_consumed));
-                    ui.end_row();
-                    ui.label("Up-alignment:");
-                    ui.label(format!("{:.3}", live.up_alignment_sum / ticks));
-                    ui.end_row();
-                    ui.label("Height:");
-                    ui.label(format!("{:.3}", live.height_sum / ticks));
-                    ui.end_row();
+            // --- Legs: break one to see how the robot copes ---
+            let legs = brain.legs();
+            if !legs.is_empty() {
+                ui.separator();
+                let broken = brain.broken_legs();
+                ui.horizontal(|ui| {
+                    ui.label(format!("Legs: {} ({} broken)", legs.len(), broken.len()))
+                        .on_hover_text(
+                            "A leg is the chain of parts from a foot up to where the body \
+                             branches; a broken leg's joints go limp",
+                        );
+                    let intact: Vec<usize> = legs
+                        .iter()
+                        .copied()
+                        .filter(|l| !broken.contains(l))
+                        .collect();
+                    if !intact.is_empty() && ui.button("Break a leg").clicked() {
+                        let leg =
+                            intact[rand::Rng::random_range(&mut rand::rng(), 0..intact.len())];
+                        brain.break_leg(leg);
+                    }
+                    if !broken.is_empty() && ui.button("Mend").clicked() {
+                        brain.mend();
+                    }
                 });
+            }
+
+            // --- Live brain metrics (robots in the population) ---
+            if let Some(live) = live {
+                ui.separator();
+                ui.heading("Live");
+                let ticks = live.metric_ticks.max(1) as f32;
+                egui::Grid::new("live_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 2.0])
+                    .show(ui, |ui| {
+                        ui.label("Energy:");
+                        ui.label(format!("{:.1}", live.energy_consumed));
+                        ui.end_row();
+                        ui.label("Up-alignment:");
+                        ui.label(format!("{:.3}", live.up_alignment_sum / ticks));
+                        ui.end_row();
+                        ui.label("Height:");
+                        ui.label(format!("{:.3}", live.height_sum / ticks));
+                        ui.end_row();
+                    });
+            }
 
             // --- Topology ---
             let layout = InputLayout {
@@ -149,6 +187,7 @@ pub fn render_robot_inspector(
                     .iter()
                     .filter(|s| s.brain_entity == brain_entity)
                     .count(),
+                steering: targets.contains(brain_entity),
             };
             let (num_imus, num_touches, num_ultrasonics, num_joints) = (
                 layout.imus,
@@ -158,14 +197,29 @@ pub fn render_robot_inspector(
             );
             let num_prismatics = brain.prismatic_joints.len();
 
-            let genotype = population.agents.get(agent_index).map(|a| &a.genotype);
+            let agent = population.agents.get(agent_index);
+            let genotype = agent.map(|a| &a.genotype);
             ui.separator();
             ui.heading("Topology");
             egui::Grid::new("topology_grid")
                 .num_columns(2)
                 .spacing([8.0, 2.0])
                 .show(ui, |ui| {
+                    if let Some(body) = agent.and_then(|a| a.body_traits) {
+                        ui.label("Body:").on_hover_text(
+                            "Feet (touch sensors) and the body's longest horizontal extent at \
+                             rest: the body traits quality diversity can spread robots over",
+                        );
+                        ui.label(format!("{} feet, {:.1} m long", body.feet, body.length));
+                        ui.end_row();
+                    }
                     if let Some(genotype) = genotype {
+                        ui.label("Body age:").on_hover_text(
+                            "Generations this body has been in the gene pool; protecting new \
+                             bodies favours young ones",
+                        );
+                        ui.label(format!("{} generations", genotype.body_age));
+                        ui.end_row();
                         ui.label("Brain:");
                         ui.label(genotype.encoding.label());
                         ui.end_row();
@@ -181,6 +235,11 @@ pub fn render_robot_inspector(
                             ui.end_row();
                         }
                     }
+                    ui.label("Rhythm:").on_hover_text(
+                        "The frequency of the clock this robot's brain reads, evolved",
+                    );
+                    ui.label(format!("{:.2} Hz", brain.rhythm_hz));
+                    ui.end_row();
                     ui.label("Inputs:");
                     ui.label(format!("{}", brain.sensor_inputs.len()));
                     ui.end_row();
@@ -264,6 +323,11 @@ pub fn render_robot_inspector(
                             }
                             for i in 0..layout.sliders {
                                 row(ui, format!("slider{i}.extension:"), layout.slider_offset(i));
+                            }
+                            if layout.steering {
+                                let at = layout.bearing_offset();
+                                row(ui, "target.sin:".to_string(), at);
+                                row(ui, "target.cos:".to_string(), at + 1);
                             }
                         });
                 });

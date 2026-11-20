@@ -33,6 +33,7 @@ fn main() {
         (
             ui::lab_panel::render_ui,
             ui::robot_inspector::render_robot_inspector,
+            ui::hall_panel::render_hall_of_fame,
         ),
     )
     .add_systems(Update, sync_time_scale)
@@ -41,7 +42,8 @@ fn main() {
     // Dropping `.lsys` files into assets/morphologies/ needs a folder listing,
     // which a browser cannot give.
     #[cfg(not(target_arch = "wasm32"))]
-    app.add_plugins(symbios_robot_lab::core::hotload::MorphologyHotloadPlugin);
+    app.add_plugins(symbios_robot_lab::core::hotload::MorphologyHotloadPlugin)
+        .add_systems(Update, ui::hall_panel::import_dropped_files);
 
     app.run();
 }

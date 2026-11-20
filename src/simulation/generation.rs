@@ -1,12 +1,14 @@
 //! The end of a generation: score every agent, merge them into the parent
 //! pool, breed the next generation and replace the robots.
 
-use crate::core::config::{BrainEncoding, LabConfig};
+use crate::core::config::{BrainEncoding, LabConfig, Task};
+use crate::core::descriptor::{ACTION_INTENSITY, DUTY_FACTOR, FEET, LENGTH, NUM_TRAITS};
 use crate::core::genome::AgentGenotype;
 use crate::core::morphology_pool::RuntimeMorphologyPool;
 use crate::core::population::{Agent, Population};
 use crate::simulation::clock::GenerationClock;
-use crate::simulation::fitness::{evaluate_trajectory, trajectory_of};
+use crate::simulation::fitness::{NUM_OBJECTIVES, evaluate_trajectory, trajectory_of};
+use crate::simulation::hall_of_fame::{HallOfFame, Immigrants};
 use crate::simulation::lifecycle::{DerivedBody, derive_blueprint, fresh_agent_from_pool};
 use crate::simulation::parent_pool::ParentPool;
 use crate::simulation::rng::LabRng;
@@ -23,16 +25,25 @@ const MIN_MOTORS: usize = 4;
 /// keep the gene pool diverse.
 const FRESH_SHARE: usize = 10;
 
-/// The phenotype an agent's evaluation produced. Exploded, under-motored and
-/// non-progressing agents get `f32::MIN` objectives, so any viable agent
-/// dominates them.
+/// The phenotype an agent's evaluation produced, its descriptor holding all
+/// four traits (see [`crate::core::descriptor`]). Exploded, under-motored and
+/// non-progressing agents fail: they get `f32::MIN` fitness and objectives,
+/// so any viable agent dominates them, and the quality-diversity archives
+/// leave them out.
 pub fn phenotype_of(agent: &Agent) -> Phenotype<AgentGenotype> {
     let viable =
         !agent.exploded && agent.num_motors > MIN_MOTORS && agent.displacement > f32::EPSILON;
-    let (fitness, objectives, descriptor) = if viable {
-        evaluate_trajectory(&trajectory_of(agent))
+    let mut descriptor = vec![0.0; NUM_TRAITS];
+    let (fitness, objectives) = if viable {
+        let (fitness, objectives, gait) = evaluate_trajectory(&trajectory_of(agent));
+        descriptor[DUTY_FACTOR] = gait[0];
+        descriptor[ACTION_INTENSITY] = gait[1];
+        if let Some(body) = agent.body_traits {
+            [descriptor[FEET], descriptor[LENGTH]] = body.scaled();
+        }
+        (fitness, objectives)
     } else {
-        (f32::MIN, vec![f32::MIN, f32::MIN], vec![0.0, 0.0])
+        (f32::MIN, vec![f32::MIN; NUM_OBJECTIVES])
     };
     Phenotype {
         genotype: agent.genotype.clone(),
@@ -59,6 +70,8 @@ pub fn end_generation(
     mut parent_pool: ResMut<ParentPool>,
     runtime_pool: Res<RuntimeMorphologyPool>,
     mut rng: ResMut<LabRng>,
+    mut hall: ResMut<HallOfFame>,
+    mut immigrants: ResMut<Immigrants>,
 ) {
     if !clock.is_finished() || !config.auto_restart {
         return;
@@ -67,16 +80,14 @@ pub fn end_generation(
     let evaluated: Vec<Phenotype<AgentGenotype>> =
         population.agents.iter().map(phenotype_of).collect();
     let summary = summarize(generation, &population.agents, &evaluated);
+    hall.offer(generation, &evaluated);
 
-    parent_pool.merge(
-        config.algorithm,
-        evaluated,
-        config.population_size,
-        rng.rng(),
-    );
+    parent_pool.merge(&config, evaluated, rng.rng());
     let summary = GenerationSummary {
         pool_best_fitness: parent_pool.best_fitness(),
         pool_size: parent_pool.len(),
+        distinct_bodies: parent_pool.distinct_bodies(),
+        oldest_body: parent_pool.oldest_body(),
         ..summary
     };
     info!(
@@ -91,7 +102,8 @@ pub fn end_generation(
     telemetry.record(summary);
     telemetry.pareto_front_size = parent_pool.front_size();
 
-    let next = breed_generation(&parent_pool, &config, &runtime_pool, rng.rng());
+    let arrivals = std::mem::take(&mut immigrants.0);
+    let next = breed_generation(&parent_pool, &config, &runtime_pool, arrivals, rng.rng());
 
     for agent in &population.agents {
         if let Some(root) = agent.root_entity {
@@ -141,27 +153,32 @@ fn summarize(
         exploded: agents.iter().filter(|a| a.exploded).count(),
         evaluated: agents.len(),
         pool_size: 0,
+        distinct_bodies: 0,
+        oldest_body: 0,
     }
 }
 
-/// The next generation: offspring bred from the parent pool plus a share of
-/// fresh bodies. A pool too small to breed from (all agents failed, say) is
-/// topped up with fresh bodies rather than shrinking the population.
+/// The next generation: `immigrants` (genotypes sent into evolution, as new
+/// bodies to this run), offspring bred from the parent pool in their place,
+/// and a share of fresh bodies. A pool too small to breed from (all agents
+/// failed, say) is topped up with fresh bodies rather than shrinking the
+/// population.
 fn breed_generation(
     parent_pool: &ParentPool,
     config: &LabConfig,
     runtime_pool: &RuntimeMorphologyPool,
+    immigrants: Vec<AgentGenotype>,
     rng: &mut impl Rng,
 ) -> Vec<Agent> {
     let num_fresh = config.population_size / FRESH_SHARE;
     let num_bred = config.population_size - num_fresh;
 
-    let offspring: Vec<AgentGenotype> = (0..num_bred)
-        .map_while(|_| parent_pool.breed(config.algorithm, config.mutation_rate, rng))
-        .collect();
-    let mut agents = derive_offspring(offspring, rng);
+    let mut offspring = arrivals(immigrants, config.population_size);
+    let num_offspring = num_bred.saturating_sub(offspring.len());
+    offspring.extend((0..num_offspring).map_while(|_| parent_pool.breed(config, rng)));
+    let mut agents = derive_offspring(offspring, config.task, rng);
     while agents.len() < config.population_size {
-        match fresh_agent_from_pool(runtime_pool, config.brain, rng) {
+        match fresh_agent_from_pool(runtime_pool, config.brain, config.task, rng) {
             Some(agent) => agents.push(agent),
             None => break,
         }
@@ -169,10 +186,24 @@ fn breed_generation(
     agents
 }
 
+/// Up to `room` immigrants, their bodies new to this gene pool (age 0).
+pub(crate) fn arrivals(mut immigrants: Vec<AgentGenotype>, room: usize) -> Vec<AgentGenotype> {
+    immigrants.truncate(room);
+    for genotype in &mut immigrants {
+        genotype.body_age = 0;
+    }
+    immigrants
+}
+
 /// Derives the offspring's bodies in parallel and resizes each direct brain
-/// to its body's sensors and joints where crossover or mutation changed them.
-/// A HyperNEAT CPPN needs no resizing: it paints whatever body it gets.
-fn derive_offspring(offspring: Vec<AgentGenotype>, rng: &mut impl Rng) -> Vec<Agent> {
+/// to its body's sensors and joints, and `task`'s inputs, where crossover,
+/// mutation or a change of task changed them. A HyperNEAT CPPN needs no
+/// resizing: it paints whatever body it gets.
+pub(crate) fn derive_offspring(
+    offspring: Vec<AgentGenotype>,
+    task: Task,
+    rng: &mut impl Rng,
+) -> Vec<Agent> {
     if offspring.is_empty() {
         return Vec::new();
     }
@@ -194,7 +225,7 @@ fn derive_offspring(offspring: Vec<AgentGenotype>, rng: &mut impl Rng) -> Vec<Ag
         .zip(derived)
         .map(|(mut child, derived)| match derived {
             Some(body) => {
-                let inputs = body.inputs.total();
+                let inputs = body.inputs.for_task(task).total();
                 if child.encoding == BrainEncoding::Direct
                     && (inputs != child.controller.input_ids.len()
                         || body.num_outputs != child.controller.output_ids.len())
@@ -217,8 +248,13 @@ mod tests {
     use rand_pcg::Pcg64;
 
     fn walker(rng: &mut Pcg64) -> Agent {
-        let mut agent =
-            fresh_agent(MORPHOLOGY_POOL[2], BrainEncoding::Direct, rng).expect("hexapod derives");
+        let mut agent = fresh_agent(
+            MORPHOLOGY_POOL[2],
+            BrainEncoding::Direct,
+            Task::Forward,
+            rng,
+        )
+        .expect("hexapod derives");
         agent.displacement = 1.0;
         agent.avg_velocity = 0.5;
         agent.com_bounce = 0.05;
@@ -237,6 +273,23 @@ mod tests {
         assert_eq!(phenotype_of(&exploded).fitness, f32::MIN);
     }
 
+    /// A walker's descriptor holds its gait and its body: the hexapod stands
+    /// on six feet and spans about 2.4 m.
+    #[test]
+    fn a_phenotype_describes_its_gait_and_its_body() {
+        let mut rng = Pcg64::seed_from_u64(4);
+        let mut hexapod = walker(&mut rng);
+        hexapod.support_duty_factor = 0.6;
+        let descriptor = phenotype_of(&hexapod).descriptor;
+        assert_eq!(descriptor.len(), NUM_TRAITS);
+        assert_eq!(descriptor[DUTY_FACTOR], 0.6);
+        assert_eq!(descriptor[FEET], 6.0 / crate::core::descriptor::FEET_SCALE);
+        let length = descriptor[LENGTH] * crate::core::descriptor::LENGTH_SCALE;
+        assert!((2.0..3.0).contains(&length), "hexapod length {length} m");
+        hexapod.exploded = true;
+        assert_eq!(phenotype_of(&hexapod).descriptor, vec![0.0; NUM_TRAITS]);
+    }
+
     #[test]
     fn a_pool_too_small_to_breed_is_topped_up_with_fresh_bodies() {
         let mut rng = Pcg64::seed_from_u64(2);
@@ -248,6 +301,7 @@ mod tests {
             &ParentPool::default(),
             &config,
             &RuntimeMorphologyPool::default(),
+            Vec::new(),
             &mut rng,
         );
         assert_eq!(next.len(), 12);
@@ -258,12 +312,12 @@ mod tests {
     fn offspring_keep_a_cppn_whatever_body_they_grow_and_resize_a_direct_brain() {
         let mut rng = Pcg64::seed_from_u64(3);
         let hexapod = |encoding, rng: &mut Pcg64| {
-            fresh_agent(MORPHOLOGY_POOL[2], encoding, rng)
+            fresh_agent(MORPHOLOGY_POOL[2], encoding, Task::Forward, rng)
                 .expect("hexapod derives")
                 .genotype
         };
         let crawler = |encoding, rng: &mut Pcg64| {
-            fresh_agent(MORPHOLOGY_POOL[4], encoding, rng)
+            fresh_agent(MORPHOLOGY_POOL[4], encoding, Task::Forward, rng)
                 .expect("crawler derives")
                 .genotype
         };
@@ -275,11 +329,32 @@ mod tests {
         direct_child.morphology = crawler_body.morphology.clone();
         let crawler_inputs = crawler_body.controller.input_ids.len();
 
-        let agents = derive_offspring(vec![cppn_child, direct_child], &mut rng);
+        let agents = derive_offspring(vec![cppn_child, direct_child], Task::Forward, &mut rng);
         assert_eq!(agents[0].genotype.controller.input_ids.len(), 7);
         assert_eq!(
             agents[1].genotype.controller.input_ids.len(),
             crawler_inputs
+        );
+    }
+
+    /// Switching to the target task rewires bred direct brains for the
+    /// bearing: two more inputs on the same body.
+    #[test]
+    fn offspring_bred_for_the_target_task_read_the_bearing() {
+        let mut rng = Pcg64::seed_from_u64(6);
+        let parent = fresh_agent(
+            MORPHOLOGY_POOL[2],
+            BrainEncoding::Direct,
+            Task::Forward,
+            &mut rng,
+        )
+        .expect("hexapod derives")
+        .genotype;
+        let forward_inputs = parent.controller.input_ids.len();
+        let agents = derive_offspring(vec![parent], Task::Target, &mut rng);
+        assert_eq!(
+            agents[0].genotype.controller.input_ids.len(),
+            forward_inputs + crate::simulation::sensors::NUM_BEARING_INPUTS
         );
     }
 }

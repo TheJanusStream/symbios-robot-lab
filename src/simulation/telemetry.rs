@@ -24,6 +24,10 @@ pub struct GenerationSummary {
     pub evaluated: usize,
     /// Individuals in the parent pool after merging.
     pub pool_size: usize,
+    /// Different bodies among them (brain-only children share a body).
+    pub distinct_bodies: usize,
+    /// Generations the oldest body among them has been in the pool.
+    pub oldest_body: u32,
 }
 
 /// Statistics accumulated over the whole run.
@@ -73,6 +77,8 @@ mod tests {
             exploded: 0,
             evaluated: 4,
             pool_size: 4,
+            distinct_bodies: 4,
+            oldest_body: 0,
         }
     }
 

@@ -38,10 +38,42 @@ pub struct AgentGenotype {
 
     /// Number of L-System derivation steps (controls morphological complexity).
     pub lsystem_iterations: usize,
+
+    /// Frequency (Hz) of the robot's clock, the sine and cosine its brain
+    /// reads. Evolved per robot: a body's natural stride rate depends on its
+    /// size and legs. Archives written before it read as the lab's former
+    /// fixed clock, [`DEFAULT_RHYTHM_HZ`].
+    #[serde(default = "default_rhythm_hz")]
+    pub rhythm_hz: f32,
+
+    /// Generations this body has been in the gene pool: 0 while a new body
+    /// is evaluated for the first time, one more each generation it survives
+    /// in the parent pool, and inherited by children that keep it. Protecting
+    /// new bodies selects for youth, so a new body has a few generations to
+    /// tune its brain before it competes with bodies whose brains have been
+    /// tuned for many.
+    #[serde(default)]
+    pub body_age: u32,
 }
 
 /// L-System derivation steps a fresh genotype starts with.
 pub const INITIAL_LSYSTEM_ITERATIONS: usize = 3;
+/// The most derivation steps mutation lets a body grow with.
+pub const MAX_LSYSTEM_ITERATIONS: usize = 6;
+
+/// The clock frequency (Hz) the lab used for every robot before robots
+/// evolved their own, near a legged animal's stride rate.
+pub const DEFAULT_RHYTHM_HZ: f32 = 1.0;
+/// The slowest and fastest clock a robot may evolve (Hz).
+pub const MIN_RHYTHM_HZ: f32 = 0.25;
+pub const MAX_RHYTHM_HZ: f32 = 4.0;
+/// A rhythm mutation multiplies the frequency by `exp(u)`, `u` uniform in
+/// `[-RHYTHM_STEP, RHYTHM_STEP]` (up to about +-25%).
+const RHYTHM_STEP: f32 = 0.25;
+
+fn default_rhythm_hz() -> f32 {
+    DEFAULT_RHYTHM_HZ
+}
 
 impl AgentGenotype {
     /// A fresh genotype whose body is `morphology` derived with
@@ -52,12 +84,19 @@ impl AgentGenotype {
     /// body already, to size the brain from its sensors and joints: drawing a
     /// different seed here would score one body and breed another whenever
     /// the morphology has stochastic rules.
+    ///
+    /// The source is kept in the form the L-system writes it back in, which
+    /// mutation and crossover keep, so two genotypes grow the same body
+    /// exactly when their sources match (see [`Self::same_body`]).
     pub fn new(
         morphology: String,
         lsystem_seed: u64,
         encoding: BrainEncoding,
         controller: NeatGenome,
     ) -> Self {
+        let morphology = System::from_source(&morphology)
+            .map(|system| system.to_source())
+            .unwrap_or(morphology);
         Self {
             morphology,
             controller,
@@ -65,12 +104,100 @@ impl AgentGenotype {
             generation: 0,
             lsystem_seed,
             lsystem_iterations: INITIAL_LSYSTEM_ITERATIONS,
+            rhythm_hz: DEFAULT_RHYTHM_HZ,
+            body_age: 0,
         }
     }
-}
 
-impl Genotype for AgentGenotype {
-    fn mutate<R: Rng>(&mut self, rng: &mut R, rate: f32) {
+    /// Whether `other` grows the same body: the same L-system source, seed
+    /// and derivation steps.
+    pub fn same_body(&self, other: &Self) -> bool {
+        self.morphology == other.morphology
+            && self.lsystem_seed == other.lsystem_seed
+            && self.lsystem_iterations == other.lsystem_iterations
+    }
+
+    /// A child that varies only the body: the bodies of `self` and `other`
+    /// crossed and then mutated, with `self`'s brain and rhythm unchanged, so
+    /// the new body is first tried with a brain that already walks.
+    pub fn body_child<R: Rng>(&self, other: &Self, rate: f32, rng: &mut R) -> Self {
+        let mut child = Self {
+            morphology: self.cross_morphology(other, rng),
+            lsystem_seed: pick(self.lsystem_seed, other.lsystem_seed, rng),
+            lsystem_iterations: pick(self.lsystem_iterations, other.lsystem_iterations, rng),
+            generation: self.generation.max(other.generation) + 1,
+            ..self.clone()
+        };
+        child.mutate_body(rng, rate);
+        child
+    }
+
+    /// A child that varies only the brain: `self`'s body unchanged, the
+    /// brains of `self` and `other` crossed and then mutated, so the new
+    /// brain is judged on a body it was bred for.
+    pub fn brain_child<R: Rng>(&self, other: &Self, rate: f32, rng: &mut R) -> Self {
+        let mut child = Self {
+            controller: self.cross_controller(other, rng),
+            rhythm_hz: pick(self.rhythm_hz, other.rhythm_hz, rng),
+            generation: self.generation.max(other.generation) + 1,
+            ..self.clone()
+        };
+        child.mutate_brain(rng, rate);
+        child
+    }
+
+    /// Sets a newly bred child's body age from its parents: a parent's age
+    /// plus one if the child kept that parent's body (the parent ages a
+    /// generation while the child is evaluated), 0 for a new body.
+    pub fn inherit_body_age(&mut self, parents: [&Self; 2]) {
+        self.body_age = parents
+            .iter()
+            .filter(|parent| self.same_body(parent))
+            .map(|parent| parent.body_age.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+    }
+
+    /// The bodies' L-systems crossed (rules chosen, constants blended); this
+    /// parent's source if either fails to parse or the crossover fails.
+    fn cross_morphology<R: Rng>(&self, other: &Self, rng: &mut R) -> String {
+        match (
+            System::from_source(&self.morphology),
+            System::from_source(&other.morphology),
+        ) {
+            (Ok(sys_a), Ok(sys_b)) => {
+                let config = CrossoverConfig::default();
+                match sys_a.crossover_with_rng(&sys_b, rng, &config) {
+                    Ok(offspring) => offspring.to_source(),
+                    Err(_) => self.morphology.clone(),
+                }
+            }
+            _ => self.morphology.clone(),
+        }
+    }
+
+    /// The brains' genomes crossed. A direct genome and a CPPN cannot be
+    /// aligned gene by gene, so a child of mixed parents (the brain setting
+    /// changed mid-run) keeps this parent's brain: the selector hands the
+    /// fitter parent first.
+    fn cross_controller<R: Rng>(&self, other: &Self, rng: &mut R) -> NeatGenome {
+        if self.encoding == other.encoding {
+            self.controller.crossover(&other.controller, rng)
+        } else {
+            self.controller.clone()
+        }
+    }
+
+    /// A fresh robot's clock frequency: log-uniform between half and twice
+    /// [`DEFAULT_RHYTHM_HZ`], so a new run starts with a spread of rhythms.
+    pub fn random_rhythm(rng: &mut impl Rng) -> f32 {
+        let octave = std::f32::consts::LN_2;
+        DEFAULT_RHYTHM_HZ * rng.random_range(-octave..=octave).exp()
+    }
+
+    /// Varies the body: the L-system's constants, rules and operators, the
+    /// seed of its stochastic rules, and its number of derivation steps.
+    pub fn mutate_body<R: Rng>(&mut self, rng: &mut R, rate: f32) {
         // 1. Mutate Body (L-System Source)
         if let Ok(mut system) = System::from_source(&self.morphology) {
             let r = rate as f64;
@@ -145,58 +272,52 @@ impl Genotype for AgentGenotype {
             self.lsystem_seed = rng.random();
         }
 
-        // 3. Mutate L-System iteration count (±1, clamped to [1, 6])
+        // 3. Mutate L-System iteration count (±1, clamped to [1, MAX])
         if rng.random_bool((rate * 0.1) as f64) {
             let delta: i32 = if rng.random_bool(0.5) { 1 } else { -1 };
-            self.lsystem_iterations = (self.lsystem_iterations as i32 + delta).clamp(1, 6) as usize;
+            self.lsystem_iterations = (self.lsystem_iterations as i32 + delta)
+                .clamp(1, MAX_LSYSTEM_ITERATIONS as i32)
+                as usize;
         }
-
-        // 4. Mutate Brain
-        self.controller.mutate(rng, rate);
     }
 
+    /// Varies the brain: the controller genome and the clock's frequency.
+    pub fn mutate_brain<R: Rng>(&mut self, rng: &mut R, rate: f32) {
+        self.controller.mutate(rng, rate);
+        if rng.random_bool((rate * 0.5).clamp(0.0, 1.0) as f64) {
+            let step = rng.random_range(-RHYTHM_STEP..=RHYTHM_STEP).exp();
+            self.rhythm_hz = (self.rhythm_hz * step).clamp(MIN_RHYTHM_HZ, MAX_RHYTHM_HZ);
+        }
+    }
+}
+
+impl Genotype for AgentGenotype {
+    fn mutate<R: Rng>(&mut self, rng: &mut R, rate: f32) {
+        self.mutate_body(rng, rate);
+        self.mutate_brain(rng, rate);
+    }
+
+    /// Crosses body and brain together. The child's body age is 0 until
+    /// [`AgentGenotype::inherit_body_age`] compares it with its parents.
     fn crossover<R: Rng>(&self, other: &Self, rng: &mut R) -> Self {
-        // Crossover body via L-System rule selection + constant blending
-        let morphology = match (
-            System::from_source(&self.morphology),
-            System::from_source(&other.morphology),
-        ) {
-            (Ok(sys_a), Ok(sys_b)) => {
-                let config = CrossoverConfig::default();
-                match sys_a.crossover_with_rng(&sys_b, rng, &config) {
-                    Ok(offspring) => offspring.to_source(),
-                    Err(_) => self.morphology.clone(),
-                }
-            }
-            _ => self.morphology.clone(),
-        };
-
-        // A direct genome and a CPPN cannot be aligned gene by gene, so a
-        // child of mixed parents (the brain setting changed mid-run) keeps
-        // this parent's brain: the selector hands the fitter parent first.
-        let controller = if self.encoding == other.encoding {
-            self.controller.crossover(&other.controller, rng)
-        } else {
-            self.controller.clone()
-        };
-
+        let morphology = self.cross_morphology(other, rng);
+        let controller = self.cross_controller(other, rng);
         Self {
             morphology,
             controller,
             encoding: self.encoding,
             generation: self.generation.max(other.generation) + 1,
-            lsystem_seed: if rng.random_bool(0.5) {
-                self.lsystem_seed
-            } else {
-                other.lsystem_seed
-            },
-            lsystem_iterations: if rng.random_bool(0.5) {
-                self.lsystem_iterations
-            } else {
-                other.lsystem_iterations
-            },
+            lsystem_seed: pick(self.lsystem_seed, other.lsystem_seed, rng),
+            lsystem_iterations: pick(self.lsystem_iterations, other.lsystem_iterations, rng),
+            rhythm_hz: pick(self.rhythm_hz, other.rhythm_hz, rng),
+            body_age: 0,
         }
     }
+}
+
+/// `a` or `b`, evenly.
+fn pick<T>(a: T, b: T, rng: &mut impl Rng) -> T {
+    if rng.random_bool(0.5) { a } else { b }
 }
 
 #[cfg(test)]
@@ -248,6 +369,103 @@ mod tests {
         );
         assert_eq!(g.lsystem_seed, 1234);
         assert_eq!(g.lsystem_iterations, INITIAL_LSYSTEM_ITERATIONS);
+    }
+
+    #[test]
+    fn the_rhythm_stays_in_range_and_children_inherit_a_parents() {
+        let mut rng = Pcg64::seed_from_u64(8);
+        for _ in 0..200 {
+            let r = AgentGenotype::random_rhythm(&mut rng);
+            assert!((0.5..=2.0).contains(&r), "fresh rhythm {r}");
+        }
+        let mut g = make_genotype(&mut rng);
+        assert_eq!(g.rhythm_hz, DEFAULT_RHYTHM_HZ);
+        let mut changed = false;
+        for _ in 0..300 {
+            let before = g.rhythm_hz;
+            g.mutate_brain(&mut rng, 1.0);
+            changed |= g.rhythm_hz != before;
+            assert!((MIN_RHYTHM_HZ..=MAX_RHYTHM_HZ).contains(&g.rhythm_hz));
+        }
+        assert!(changed, "brain mutation never moved the rhythm");
+        // Body mutation leaves the brain's rhythm alone.
+        let before = g.rhythm_hz;
+        g.mutate_body(&mut rng, 1.0);
+        assert_eq!(g.rhythm_hz, before);
+        let a = AgentGenotype {
+            rhythm_hz: 0.5,
+            ..make_genotype(&mut rng)
+        };
+        let b = AgentGenotype {
+            rhythm_hz: 3.0,
+            ..make_genotype(&mut rng)
+        };
+        let child = a.crossover(&b, &mut rng);
+        assert!(child.rhythm_hz == 0.5 || child.rhythm_hz == 3.0);
+    }
+
+    #[test]
+    fn a_genotype_keeps_its_body_as_the_l_system_writes_it() {
+        let mut rng = Pcg64::seed_from_u64(9);
+        for preset in crate::core::presets::MORPHOLOGY_POOL {
+            let g = AgentGenotype::new(
+                preset.to_string(),
+                1,
+                BrainEncoding::HyperNeat,
+                NeatGenome::fully_connected(NeatConfig::cppn(7, 8), &mut rng),
+            );
+            let rewritten = System::from_source(&g.morphology)
+                .expect("parses")
+                .to_source();
+            assert_eq!(rewritten, g.morphology);
+            // So a body crossed with itself is the same body.
+            assert!(g.crossover(&g, &mut rng).same_body(&g));
+        }
+    }
+
+    #[test]
+    fn a_child_takes_the_age_of_the_body_it_keeps() {
+        let mut rng = Pcg64::seed_from_u64(10);
+        let parent = AgentGenotype {
+            body_age: 4,
+            ..make_cppn_genotype(&mut rng)
+        };
+        let other = AgentGenotype {
+            body_age: 9,
+            lsystem_seed: 99,
+            ..make_cppn_genotype(&mut rng)
+        };
+        let mut brain_child = parent.brain_child(&other, 1.0, &mut rng);
+        assert!(brain_child.same_body(&parent));
+        brain_child.inherit_body_age([&parent, &other]);
+        assert_eq!(brain_child.body_age, 5);
+
+        let mut new_body = (0..50)
+            .map(|_| parent.body_child(&other, 1.0, &mut rng))
+            .find(|c| !c.same_body(&parent) && !c.same_body(&other))
+            .expect("body mutation changes a body");
+        new_body.inherit_body_age([&parent, &other]);
+        assert_eq!(new_body.body_age, 0);
+        // A body child's brain is its first parent's.
+        let brain = |g: &AgentGenotype| serde_json::to_string(&g.controller).expect("serializes");
+        assert_eq!(brain(&new_body), brain(&parent));
+        assert_eq!(new_body.rhythm_hz, parent.rhythm_hz);
+
+        let mut adopted = other.clone();
+        adopted.inherit_body_age([&parent, &other]);
+        assert_eq!(adopted.body_age, 10);
+    }
+
+    #[test]
+    fn an_archive_written_before_rhythms_reads_as_one_hertz() {
+        let mut rng = Pcg64::seed_from_u64(6);
+        let mut json = serde_json::to_value(make_genotype(&mut rng)).expect("serialize");
+        json.as_object_mut()
+            .expect("an object")
+            .remove("rhythm_hz")
+            .expect("has a rhythm");
+        let g: AgentGenotype = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(g.rhythm_hz, DEFAULT_RHYTHM_HZ);
     }
 
     #[test]

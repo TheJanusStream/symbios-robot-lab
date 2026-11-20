@@ -1,12 +1,14 @@
 //! From morphology source to agents: deriving a body's blueprint, creating
 //! fresh agents from the preset pool, and starting a new run.
 
-use crate::core::config::{BrainEncoding, LabConfig};
+use crate::core::config::{BrainEncoding, LabConfig, Task};
 use crate::core::genome::{AgentGenotype, INITIAL_LSYSTEM_ITERATIONS};
 use crate::core::morphology_pool::RuntimeMorphologyPool;
 use crate::core::population::{Agent, Population};
 use crate::core::presets::MORPHOLOGY_POOL;
 use crate::simulation::clock::GenerationClock;
+use crate::simulation::generation::{arrivals, derive_offspring};
+use crate::simulation::hall_of_fame::Immigrants;
 use crate::simulation::hyperneat::fresh_cppn;
 use crate::simulation::parent_pool::ParentPool;
 use crate::simulation::rng::LabRng;
@@ -116,11 +118,16 @@ pub fn pick_morphology(runtime_pool: &RuntimeMorphologyPool, rng: &mut impl Rng)
 }
 
 /// A fresh agent: a body derived from `morphology` with a new seed, and a
-/// fully connected controller: a brain sized for the body, or for
-/// HyperNEAT a CPPN, whose shape no body changes. The genotype keeps the
-/// seed the body was derived with, so the body it is scored on is the body
-/// it breeds.
-pub fn fresh_agent(morphology: &str, encoding: BrainEncoding, rng: &mut impl Rng) -> Option<Agent> {
+/// fully connected controller: a brain sized for the body and `task` (the
+/// target task adds the bearing inputs), or for HyperNEAT a CPPN, whose
+/// shape no body or task changes. The genotype keeps the seed the body was
+/// derived with, so the body it is scored on is the body it breeds.
+pub fn fresh_agent(
+    morphology: &str,
+    encoding: BrainEncoding,
+    task: Task,
+    rng: &mut impl Rng,
+) -> Option<Agent> {
     let seed: u64 = rng.random();
     let derived = derive_blueprint(morphology, seed, INITIAL_LSYSTEM_ITERATIONS)?;
     if derived.num_outputs == 0 {
@@ -128,12 +135,13 @@ pub fn fresh_agent(morphology: &str, encoding: BrainEncoding, rng: &mut impl Rng
     }
     let controller = match encoding {
         BrainEncoding::Direct => NeatGenome::fully_connected(
-            brain_config(derived.inputs.total(), derived.num_outputs),
+            brain_config(derived.inputs.for_task(task).total(), derived.num_outputs),
             rng,
         ),
         BrainEncoding::HyperNeat => fresh_cppn(rng),
     };
-    let genotype = AgentGenotype::new(morphology.to_string(), seed, encoding, controller);
+    let mut genotype = AgentGenotype::new(morphology.to_string(), seed, encoding, controller);
+    genotype.rhythm_hz = AgentGenotype::random_rhythm(rng);
     Some(Agent::fresh(
         genotype,
         derived.num_outputs,
@@ -146,10 +154,13 @@ pub fn fresh_agent(morphology: &str, encoding: BrainEncoding, rng: &mut impl Rng
 pub fn fresh_agent_from_pool(
     runtime_pool: &RuntimeMorphologyPool,
     encoding: BrainEncoding,
+    task: Task,
     rng: &mut impl Rng,
 ) -> Option<Agent> {
-    (0..FRESH_ATTEMPTS)
-        .find_map(|_| fresh_agent(&pick_morphology(runtime_pool, rng), encoding, rng))
+    (0..FRESH_ATTEMPTS).find_map(|_| {
+        let morphology = pick_morphology(runtime_pool, rng);
+        fresh_agent(&morphology, encoding, task, rng)
+    })
 }
 
 /// Starts a new run: the next fixed step spawns a fresh Generation 0.
@@ -157,8 +168,8 @@ pub fn fresh_agent_from_pool(
 pub struct SpawnRequest;
 
 /// Handles [`SpawnRequest`]: despawns the robots of any previous run, clears
-/// the parent pool and the statistics, and creates Generation 0 from the
-/// preset and runtime pools.
+/// the parent pool and the statistics, and creates Generation 0: any robots
+/// sent into evolution, then fresh bodies from the preset and runtime pools.
 #[expect(
     clippy::too_many_arguments,
     reason = "a Bevy system: each parameter is a query or resource it reads"
@@ -173,6 +184,7 @@ pub fn start_new_run(
     mut rng: ResMut<LabRng>,
     config: Res<LabConfig>,
     runtime_pool: Res<RuntimeMorphologyPool>,
+    mut immigrants: ResMut<Immigrants>,
 ) {
     if requests.read().count() == 0 {
         return;
@@ -187,9 +199,12 @@ pub fn start_new_run(
     telemetry.reset();
     clock.stop();
 
-    let agents: Vec<Agent> = (0..config.population_size)
-        .filter_map(|_| fresh_agent_from_pool(&runtime_pool, config.brain, rng.rng()))
-        .collect();
+    let arrivals = arrivals(std::mem::take(&mut immigrants.0), config.population_size);
+    let mut agents = derive_offspring(arrivals, config.task, rng.rng());
+    let num_fresh = config.population_size - agents.len();
+    agents.extend((0..num_fresh).filter_map(|_| {
+        fresh_agent_from_pool(&runtime_pool, config.brain, config.task, rng.rng())
+    }));
     if agents.len() < config.population_size {
         warn!(
             "Only {} of {} Generation 0 bodies derived",
@@ -207,6 +222,26 @@ mod tests {
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
 
+    /// A fresh direct brain reads the target's bearing in the target task:
+    /// two more inputs, the same outputs.
+    #[test]
+    fn a_fresh_direct_brain_is_sized_for_its_task() {
+        let mut rng = Pcg64::seed_from_u64(12);
+        let size = |task, rng: &mut Pcg64| {
+            let agent = fresh_agent(MORPHOLOGY_POOL[2], BrainEncoding::Direct, task, rng)
+                .expect("hexapod derives");
+            let c = &agent.genotype.controller;
+            (c.input_ids.len(), c.output_ids.len())
+        };
+        let (forward_in, forward_out) = size(Task::Forward, &mut rng);
+        let (target_in, target_out) = size(Task::Target, &mut rng);
+        assert_eq!(
+            target_in,
+            forward_in + crate::simulation::sensors::NUM_BEARING_INPUTS
+        );
+        assert_eq!(target_out, forward_out);
+    }
+
     #[test]
     fn every_preset_derives_a_driven_body() {
         for (i, source) in MORPHOLOGY_POOL.iter().enumerate() {
@@ -222,8 +257,13 @@ mod tests {
         let mut rng = Pcg64::seed_from_u64(11);
         // The Quadruped preset rolls 1, 2 or 3 leg segments per leg, so a
         // different seed would usually build a different body.
-        let agent = fresh_agent(MORPHOLOGY_POOL[1], BrainEncoding::Direct, &mut rng)
-            .expect("quadruped derives");
+        let agent = fresh_agent(
+            MORPHOLOGY_POOL[1],
+            BrainEncoding::Direct,
+            Task::Forward,
+            &mut rng,
+        )
+        .expect("quadruped derives");
         let rederived = derive_blueprint(
             &agent.genotype.morphology,
             agent.genotype.lsystem_seed,
@@ -243,8 +283,8 @@ mod tests {
     fn a_fresh_hyperneat_agent_gets_a_cppn_whatever_its_body() {
         let mut rng = Pcg64::seed_from_u64(12);
         for source in MORPHOLOGY_POOL {
-            let agent =
-                fresh_agent(source, BrainEncoding::HyperNeat, &mut rng).expect("preset derives");
+            let agent = fresh_agent(source, BrainEncoding::HyperNeat, Task::Forward, &mut rng)
+                .expect("preset derives");
             assert_eq!(agent.genotype.encoding, BrainEncoding::HyperNeat);
             assert_eq!(agent.genotype.controller.input_ids.len(), CPPN_INPUTS);
             assert_eq!(agent.genotype.controller.output_ids.len(), CPPN_OUTPUTS);

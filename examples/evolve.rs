@@ -10,26 +10,44 @@
 //! - `--seed S` [drawn from the OS and printed]
 //! - `--population P` [64]
 //! - `--duration SECS` simulated seconds per generation [15]
-//! - `--algorithm simple|nsga2|map-elites|cvt|novelty` [nsga2]
+//! - `--algorithm simple|nsga2|map-elites|cvt|novelty|dns` [nsga2]
+//! - `--descriptor gait|body|body-gait` the traits the quality-diversity
+//!   algorithms spread robots over [gait]
 //! - `--brain direct|hyperneat` [hyperneat]
+//! - `--terrain flat|rough|hilly` new ground each generation unless flat
+//!   [flat]
+//! - `--task forward|target` walk forward, or to a target whose bearing the
+//!   brain reads [forward]
 //! - `--mutation-rate R` [0.3]
+//! - `--vary-body-or-brain on|off` each child varies its body or its
+//!   brain, not both [on]
+//! - `--protect-new-bodies on|off` morphological innovation protection,
+//!   NSGA-II only [off]
+//! - `--leg-damage on|off` every robot walks with one leg broken [off]
+//! - `--import PATH` a robot's JSON (saved from the hall of fame) to send
+//!   into the first generation; repeatable
+//! - `--save-best PATH` write the run's best robot as JSON at the end
 //! - `--csv PATH` also write the rows to a CSV file
 
 use std::error::Error;
 use std::fmt::Write as _;
 use std::time::Instant;
-use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig};
+use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
+use symbios_robot_lab::core::descriptor::QdDescriptor;
 use symbios_robot_lab::headless::HeadlessLab;
+use symbios_robot_lab::simulation::hall_of_fame::Champion;
 use symbios_robot_lab::simulation::telemetry::GenerationSummary;
 
 const DEFAULT_GENERATIONS: usize = 20;
-const CSV_HEADER: &str =
-    "generation,best_fitness,mean_fitness,pool_best_fitness,max_displacement,exploded,seconds";
+const CSV_HEADER: &str = "generation,best_fitness,mean_fitness,pool_best_fitness,\
+max_displacement,exploded,distinct_bodies,oldest_body,seconds";
 
 struct Options {
     generations: usize,
     config: LabConfig,
     csv: Option<String>,
+    imports: Vec<String>,
+    save_best: Option<String>,
 }
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> {
@@ -37,6 +55,8 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
         generations: DEFAULT_GENERATIONS,
         config: LabConfig::default(),
         csv: None,
+        imports: Vec::new(),
+        save_best: None,
     };
     let mut args = args.peekable();
     while let Some(flag) = args.next() {
@@ -62,11 +82,37 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                 options.config.algorithm = GeneticAlgorithm::from_cli_name(&name)
                     .ok_or(format!("unknown algorithm {name}"))?;
             }
+            "--task" => {
+                let name = value()?;
+                options.config.task =
+                    Task::from_cli_name(&name).ok_or(format!("unknown task {name}"))?;
+            }
+            "--terrain" => {
+                let name = value()?;
+                options.config.terrain =
+                    Terrain::from_cli_name(&name).ok_or(format!("unknown terrain {name}"))?;
+            }
+            "--descriptor" => {
+                let name = value()?;
+                options.config.descriptor = QdDescriptor::from_cli_name(&name)
+                    .ok_or(format!("unknown descriptor {name}"))?;
+            }
             "--brain" => {
                 let name = value()?;
                 options.config.brain =
                     BrainEncoding::from_cli_name(&name).ok_or(format!("unknown brain {name}"))?;
             }
+            "--vary-body-or-brain" => {
+                options.config.vary_body_or_brain = switch(&flag, &value()?)?;
+            }
+            "--protect-new-bodies" => {
+                options.config.protect_new_bodies = switch(&flag, &value()?)?;
+            }
+            "--leg-damage" => {
+                options.config.leg_damage = switch(&flag, &value()?)?;
+            }
+            "--import" => options.imports.push(value()?),
+            "--save-best" => options.save_best = Some(value()?),
             "--csv" => options.csv = Some(value()?),
             other => return Err(format!("unknown option {other}")),
         }
@@ -77,15 +123,26 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
     Ok(options)
 }
 
+/// An on/off option's value.
+fn switch(flag: &str, value: &str) -> Result<bool, String> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(format!("{flag} takes on or off, not {value}")),
+    }
+}
+
 fn row(summary: &GenerationSummary, seconds: f64) -> String {
     format!(
-        "{},{:.5},{:.5},{:.5},{:.3},{},{:.2}",
+        "{},{:.5},{:.5},{:.5},{:.3},{},{},{},{:.2}",
         summary.generation,
         summary.best_fitness,
         summary.mean_fitness,
         summary.pool_best_fitness,
         summary.max_displacement,
         summary.exploded,
+        summary.distinct_bodies,
+        summary.oldest_body,
         seconds
     )
 }
@@ -93,18 +150,31 @@ fn row(summary: &GenerationSummary, seconds: f64) -> String {
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options(std::env::args().skip(1))?;
     let mut lab = HeadlessLab::new(options.config.clone());
+    for path in &options.imports {
+        let champion = Champion::from_json(&std::fs::read_to_string(path)?)
+            .map_err(|err| format!("{path}: {err}"))?;
+        lab.send_into_evolution(champion.genotype);
+        println!("imported {path}");
+    }
     let started = Instant::now();
     let mut last = started;
     let mut csv = String::from(CSV_HEADER);
     csv.push('\n');
 
     println!(
-        "{} generations of {} robots, {} s each, {}, {} brains",
+        "{} generations of {} robots, {} s each, {}{}, {} brains, {} ground, {}",
         options.generations,
         options.config.population_size,
         options.config.generation_duration,
         options.config.algorithm,
-        options.config.brain
+        if options.config.protects_new_bodies() {
+            " protecting new bodies"
+        } else {
+            ""
+        },
+        options.config.brain,
+        options.config.terrain,
+        options.config.task
     );
     println!("{CSV_HEADER}");
     let telemetry = lab.run(options.generations, |summary| {
@@ -125,6 +195,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(path) = options.csv {
         std::fs::write(&path, csv)?;
         println!("wrote {path}");
+    }
+    if let Some(path) = options.save_best {
+        match lab.hall_of_fame().champions().first() {
+            Some(best) => {
+                std::fs::write(&path, best.to_json())?;
+                println!("wrote the best robot ({}) to {path}", best.label());
+            }
+            None => println!("no robot walked: nothing written to {path}"),
+        }
     }
     Ok(())
 }

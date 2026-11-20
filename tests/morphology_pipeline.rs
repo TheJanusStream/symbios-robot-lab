@@ -5,7 +5,9 @@
 
 use symbios::System;
 use symbios_robot::{JointType, RobotConfig, RobotInterpreter};
+use symbios_robot_lab::core::descriptor::BodyTraits;
 use symbios_robot_lab::core::presets::MORPHOLOGY_POOL;
+use symbios_robot_lab::simulation::lifecycle::derive_blueprint;
 
 /// Parse an L-System morphology string and build a RobotBlueprint.
 fn build_blueprint_from_source(source: &str) -> symbios_robot::RobotBlueprint {
@@ -220,6 +222,21 @@ fn the_new_presets_slide_stand_on_limited_ankles_and_see() {
     let spawned = bevy::math::Quat::from_rotation_x(-std::f32::consts::PI);
     let gaze = spawned * module.transform.1 * eye.local_rotation * bevy::math::Vec3::Y;
     assert!(gaze.x > 0.5 && gaze.y < -0.5, "the eye looks along {gaze}");
+}
+
+/// The body traits quality diversity can spread robots over: every preset
+/// stands on three to six feet and spans 1.5 to 6 m.
+#[test]
+fn every_preset_has_feet_and_a_length() {
+    for (i, source) in MORPHOLOGY_POOL.iter().enumerate() {
+        let body = derive_blueprint(source, 1, 3).expect("the preset derives");
+        let traits = BodyTraits::of(&body.blueprint);
+        assert!((3..=6).contains(&traits.feet), "preset {i}: {traits:?}");
+        assert!(
+            (1.5..6.0).contains(&traits.length),
+            "preset {i}: {traits:?}"
+        );
+    }
 }
 
 #[test]

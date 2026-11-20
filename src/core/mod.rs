@@ -1,6 +1,7 @@
 //! Core data types: configuration, genotypes, population state, and morphology presets.
 
 pub mod config;
+pub mod descriptor;
 pub mod genome;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hotload;
