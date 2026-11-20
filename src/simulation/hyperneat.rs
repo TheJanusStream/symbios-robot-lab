@@ -1,0 +1,588 @@
+//! HyperNEAT brains: the genome is a CPPN (compositional pattern-producing
+//! network) that paints a body's brain onto the body's geometry
+//! (Stanley, D'Ambrosio and Gauci 2009).
+//!
+//! Every brain input except the clock sits at a point on the body: an IMU's
+//! six channels just around the IMU, a touch or distance sensor at its
+//! mount, a hinge's angle at the hinge, a slider's extension at the slider. Each driven joint carries two neurons
+//! where it sits: an interneuron and the motor neuron whose output drives the
+//! joint. The CPPN is asked, for every pair of neurons, whether and how
+//! strongly they connect given where they sit, and for every joint, its
+//! rhythm (the weights from the clock's sine and cosine, so its phase and
+//! strength) and both neurons' biases.
+//!
+//! Because the brain is a function of the body's geometry rather than a list
+//! of numbered inputs, one genome drives any body: an offspring that grows a
+//! leg gets a controller for it, and legs placed alike get alike
+//! controllers. The direct encoding numbers its inputs and outputs instead,
+//! so their meaning shifts whenever crossover or mutation changes the body.
+//!
+//! Positions are in the robot's spawn frame (y up), centred on its bounding
+//! box and scaled so that its longest half-extent is 1.
+
+use crate::simulation::body::modules_in_order;
+use crate::simulation::sensors::NUM_CLOCK_INPUTS;
+use crate::simulation::spawn::spawn_rotation;
+use bevy::prelude::*;
+use rand::Rng;
+use symbios_neat::substrate::{
+    Substrate as SubstrateGraph, SubstrateNode, SubstratePainter, substrate_to_network_with,
+    write_endpoints,
+};
+use symbios_neat::{Activation, CppnEvaluator, FeedforwardNetwork, NeatConfig, NeatGenome};
+use symbios_robot::{JointDefinition, JointType, RobotBlueprint, SensorType};
+
+/// CPPN inputs: the source neuron's position, the target neuron's position
+/// and the distance between them.
+pub const CPPN_INPUTS: usize = 7;
+/// The distance input.
+const DISTANCE: usize = 6;
+
+/// CPPN outputs, one per kind of link or value it paints. Giving each kind
+/// its own output (a "multi-spatial substrate", Pugh and Stanley 2013) lets
+/// even a CPPN with no hidden nodes paint unrelated patterns for each; in
+/// particular every joint's sine and cosine weights, and so its phase, vary
+/// independently over the body.
+pub const CPPN_OUTPUTS: usize = 8;
+/// Sensor neuron to interneuron, asked at (sensor, joint).
+const SENSOR_TO_INTERNEURON: usize = 0;
+/// Sensor neuron to motor neuron, asked at (sensor, joint).
+const SENSOR_TO_MOTOR: usize = 1;
+/// Interneuron to motor neuron, asked at (joint, joint).
+const INTERNEURON_TO_MOTOR: usize = 2;
+/// Clock sine to motor neuron, asked at the joint's own position.
+const CLOCK_SIN_TO_MOTOR: usize = 3;
+/// Clock cosine to motor neuron, asked at the joint's own position.
+const CLOCK_COS_TO_MOTOR: usize = 4;
+/// Interneuron bias, asked at the joint's own position.
+const INTERNEURON_BIAS: usize = 5;
+/// Motor neuron bias, asked at the joint's own position.
+const MOTOR_BIAS: usize = 6;
+/// Link expression (Verbancsics and Stanley 2011): a link between two placed
+/// neurons exists only where this output is positive, so the CPPN paints
+/// where connections are as well as how strong.
+const LINK_EXPRESSION: usize = 7;
+
+/// The weight a CPPN output of ±1 paints. Small, so that motor neurons work
+/// in `tanh`'s linear range and follow the clock as smooth waves rather than
+/// slamming between their limits. Over 30 generations HyperNEAT reached a
+/// final pool-best fitness of 0.63 at 3.0 (most fresh motors sat pinned),
+/// 1.36 at 1.0 and 1.5, and 1.79 to 1.88 anywhere from 0.25 to 0.6, against
+/// 1.48 for direct NEAT (16 to 32 seeds each); 0.5 sits in that plateau.
+/// Direct NEAT gained nothing from smaller weights.
+pub const MAX_WEIGHT: f32 = 0.5;
+/// The bias a CPPN output of ±1 paints.
+pub const MAX_BIAS: f32 = 1.0;
+/// A fresh CPPN expresses links shorter than `LOCALITY_SEED_BIAS /
+/// LOCALITY_SEED_SLOPE` (0.4 of the body's longest half-extent): its
+/// link-expression output starts as `tanh(bias - slope * distance)`.
+/// Weights a CPPN paints vary smoothly over the body, so neighbouring
+/// inputs pull a neuron the same way; if every link were expressed, a
+/// body's many feet and channels would add up and pin its motors at their
+/// limits. Evolution can widen, narrow or reshape the rule.
+const LOCALITY_SEED_BIAS: f32 = 1.0;
+const LOCALITY_SEED_SLOPE: f32 = 2.5;
+/// How far an IMU's input neurons sit from it: its linear-acceleration
+/// channels on the positive side of each axis of the part it is mounted on,
+/// its angular ones on the negative side. Without the offsets all six would
+/// sit at one point and get the same weights.
+const IMU_CHANNEL_SPREAD: f32 = 0.25;
+/// Smallest half-extent the frame divides by, for a degenerate body.
+const MIN_FRAME_SCALE: f32 = 1e-3;
+
+/// The NEAT configuration of a HyperNEAT genome's CPPN: periodic and
+/// symmetric activations for the patterns, `tanh` outputs.
+pub fn cppn_config() -> NeatConfig {
+    NeatConfig::cppn(CPPN_INPUTS, CPPN_OUTPUTS)
+}
+
+/// A fresh HyperNEAT genome: a fully connected CPPN with random weights,
+/// except that its link expression starts as the locality rule above (from
+/// the bias and the distance only).
+pub fn fresh_cppn(rng: &mut impl Rng) -> NeatGenome {
+    let mut genome = NeatGenome::fully_connected(cppn_config(), rng);
+    let expression = genome.output_ids[LINK_EXPRESSION];
+    let bias = genome.bias_id;
+    let distance = genome.input_ids[DISTANCE];
+    for connection in genome.connections.values_mut() {
+        if connection.output == expression {
+            connection.weight = if Some(connection.input) == bias {
+                LOCALITY_SEED_BIAS
+            } else if connection.input == distance {
+                -LOCALITY_SEED_SLOPE
+            } else {
+                0.0
+            };
+        }
+    }
+    genome
+}
+
+/// Where a body's neurons sit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Substrate {
+    /// One position per brain input after the clock, in
+    /// [`InputLayout`](crate::simulation::sensors::InputLayout) order.
+    pub sensors: Vec<Vec3>,
+    /// One position per driven joint (hinges, then sliders, each in
+    /// blueprint order), where its interneuron and motor neuron sit.
+    pub joints: Vec<Vec3>,
+}
+
+impl Substrate {
+    /// The substrate of a blueprint's body in its rest pose.
+    pub fn of_blueprint(blueprint: &RobotBlueprint) -> Self {
+        let frame = BodyFrame::of(blueprint);
+        let mut imus = Vec::new();
+        let mut touches = Vec::new();
+        let mut ultrasonics = Vec::new();
+        for (_, module) in modules_in_order(blueprint) {
+            let (position, rotation) = module.transform;
+            for mount in &module.sensors {
+                let at = frame.point(position + rotation * mount.local_position);
+                match mount.sensor_type {
+                    SensorType::IMU => {
+                        let axes = [Vec3::X, Vec3::Y, Vec3::Z]
+                            .map(|axis| frame.direction(rotation * axis) * IMU_CHANNEL_SPREAD);
+                        // Linear x, y, z, then angular x, y, z, as the IMU reads.
+                        imus.extend(axes.iter().map(|&offset| at + offset));
+                        imus.extend(axes.iter().map(|&offset| at - offset));
+                    }
+                    SensorType::Touch => touches.push(at),
+                    SensorType::Ultrasonic => ultrasonics.push(at),
+                    SensorType::Camera | SensorType::Lidar => {}
+                }
+            }
+        }
+
+        let is_hinge = |j: &&JointDefinition| matches!(j.joint_type, JointType::Hinge { .. });
+        let is_slider = |j: &&JointDefinition| matches!(j.joint_type, JointType::Prismatic { .. });
+        let at_joint = |j: &JointDefinition| frame.point(joint_position(blueprint, j));
+        let hinges: Vec<Vec3> = blueprint
+            .joints
+            .iter()
+            .filter(is_hinge)
+            .map(at_joint)
+            .collect();
+        let sliders: Vec<Vec3> = blueprint
+            .joints
+            .iter()
+            .filter(is_slider)
+            .map(at_joint)
+            .collect();
+
+        let mut sensors = imus;
+        sensors.extend(touches);
+        sensors.extend(ultrasonics);
+        sensors.extend(&hinges);
+        sensors.extend(&sliders);
+        let mut joints = hinges;
+        joints.extend(sliders);
+        Self { sensors, joints }
+    }
+
+    /// Number of brain inputs: the clock, then one per sensor neuron.
+    pub fn num_inputs(&self) -> usize {
+        NUM_CLOCK_INPUTS + self.sensors.len()
+    }
+}
+
+/// A joint's position in the blueprint's frame: its anchor on the parent
+/// part (on the child if the parent is missing).
+fn joint_position(blueprint: &RobotBlueprint, joint: &JointDefinition) -> Vec3 {
+    let on = |id, anchor: Vec3| {
+        blueprint.modules.get(&id).map(|m| {
+            let (position, rotation) = m.transform;
+            position + rotation * anchor
+        })
+    };
+    on(joint.parent_id, joint.anchor_parent)
+        .or_else(|| on(joint.child_id, joint.anchor_child))
+        .unwrap_or(Vec3::ZERO)
+}
+
+/// Maps blueprint points into the substrate's frame.
+struct BodyFrame {
+    rotation: Quat,
+    centre: Vec3,
+    scale: f32,
+}
+
+impl BodyFrame {
+    fn of(blueprint: &RobotBlueprint) -> Self {
+        let rotation = spawn_rotation();
+        let aabb = blueprint.aabb(rotation);
+        let (min, max) = (Vec3::from(aabb.min), Vec3::from(aabb.max));
+        Self {
+            rotation,
+            centre: (min + max) / 2.0,
+            scale: ((max - min) / 2.0).max_element().max(MIN_FRAME_SCALE),
+        }
+    }
+
+    fn point(&self, blueprint_point: Vec3) -> Vec3 {
+        (self.rotation * blueprint_point - self.centre) / self.scale
+    }
+
+    fn direction(&self, blueprint_direction: Vec3) -> Vec3 {
+        self.rotation * blueprint_direction
+    }
+}
+
+/// The kind of a candidate link, which decides the CPPN output its weight is
+/// read from (see [`CPPN_OUTPUTS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkKind {
+    ClockSin,
+    ClockCos,
+    SensorToInterneuron,
+    SensorToMotor,
+    InterneuronToMotor,
+}
+
+/// A body's brain as symbios-neat paints it: the inputs (the two clock
+/// neurons, whose positions no query reads, then the sensor neurons), an
+/// interneuron and a motor neuron at each driven joint, and every candidate
+/// link with its kind.
+///
+/// Links are listed per joint for the clock, then per sensor and joint, then
+/// per interneuron and joint. The order sets the order in which each neuron
+/// sums its inputs, so keeping it keeps a seed's brains bit for bit.
+struct NeuronGraph {
+    nodes: Vec<SubstrateNode>,
+    links: Vec<(usize, usize)>,
+    kinds: Vec<LinkKind>,
+    inputs: Vec<usize>,
+    motors: Vec<usize>,
+    first_motor: usize,
+}
+
+impl NeuronGraph {
+    fn new(substrate: &Substrate) -> Self {
+        let node = |at: Vec3, activation| SubstrateNode {
+            coords: at.to_array().to_vec(),
+            activation,
+            bias: 0.0,
+        };
+        let mut nodes: Vec<SubstrateNode> = (0..NUM_CLOCK_INPUTS)
+            .map(|_| node(Vec3::ZERO, Activation::Identity))
+            .chain(
+                substrate
+                    .sensors
+                    .iter()
+                    .map(|&at| node(at, Activation::Identity)),
+            )
+            .collect();
+        let inputs = (0..nodes.len()).collect();
+        let first_interneuron = nodes.len();
+        nodes.extend(
+            substrate
+                .joints
+                .iter()
+                .map(|&at| node(at, Activation::Tanh)),
+        );
+        let first_motor = nodes.len();
+        nodes.extend(
+            substrate
+                .joints
+                .iter()
+                .map(|&at| node(at, Activation::Tanh)),
+        );
+        let joints = substrate.joints.len();
+
+        let mut links = Vec::new();
+        let mut kinds = Vec::new();
+        let mut add = |from, to, kind| {
+            links.push((from, to));
+            kinds.push(kind);
+        };
+        for joint in 0..joints {
+            add(0, first_motor + joint, LinkKind::ClockSin);
+            add(1, first_motor + joint, LinkKind::ClockCos);
+        }
+        for sensor in 0..substrate.sensors.len() {
+            let input = NUM_CLOCK_INPUTS + sensor;
+            for joint in 0..joints {
+                add(
+                    input,
+                    first_interneuron + joint,
+                    LinkKind::SensorToInterneuron,
+                );
+                add(input, first_motor + joint, LinkKind::SensorToMotor);
+            }
+        }
+        for source in 0..joints {
+            for joint in 0..joints {
+                let from = first_interneuron + source;
+                add(from, first_motor + joint, LinkKind::InterneuronToMotor);
+            }
+        }
+        Self {
+            nodes,
+            links,
+            kinds,
+            inputs,
+            motors: (first_motor..first_motor + joints).collect(),
+            first_motor,
+        }
+    }
+
+    fn position(&self, node: usize) -> Vec3 {
+        Vec3::from_slice(&self.nodes[node].coords)
+    }
+
+    /// A query about one neuron itself: its position as both ends, distance
+    /// 0.
+    fn ask_at(&self, node: usize, query: &mut [f32]) {
+        let here = self.position(node).to_array();
+        query[..3].copy_from_slice(&here);
+        query[3..6].copy_from_slice(&here);
+    }
+}
+
+impl SubstrateGraph for NeuronGraph {
+    fn nodes(&self) -> &[SubstrateNode] {
+        &self.nodes
+    }
+    fn links(&self) -> &[(usize, usize)] {
+        &self.links
+    }
+    fn input_indices(&self) -> &[usize] {
+        &self.inputs
+    }
+    fn output_indices(&self) -> &[usize] {
+        &self.motors
+    }
+}
+
+/// How the CPPN's outputs become the brain: links between placed neurons
+/// are asked about with both positions and their distance, and exist where
+/// the link-expression output is positive; a joint's rhythm and both its
+/// neurons' biases are asked about at the joint itself.
+struct BrainPainter;
+
+impl SubstratePainter<NeuronGraph> for BrainPainter {
+    fn link_query(&self, graph: &NeuronGraph, link: usize, query: &mut [f32]) {
+        let (from, to) = graph.links[link];
+        match graph.kinds[link] {
+            LinkKind::ClockSin | LinkKind::ClockCos => graph.ask_at(to, query),
+            _ => {
+                let written = write_endpoints(graph, link, query);
+                query[written] = graph.position(from).distance(graph.position(to));
+            }
+        }
+    }
+
+    fn link_weight(&self, graph: &NeuronGraph, link: usize, outputs: &[f32]) -> Option<f32> {
+        let output = match graph.kinds[link] {
+            // Every joint has a rhythm; a CPPN output of 0 makes it a still one.
+            LinkKind::ClockSin => CLOCK_SIN_TO_MOTOR,
+            LinkKind::ClockCos => CLOCK_COS_TO_MOTOR,
+            _ if outputs[LINK_EXPRESSION] <= 0.0 => return None,
+            LinkKind::SensorToInterneuron => SENSOR_TO_INTERNEURON,
+            LinkKind::SensorToMotor => SENSOR_TO_MOTOR,
+            LinkKind::InterneuronToMotor => INTERNEURON_TO_MOTOR,
+        };
+        let weight = outputs[output] * MAX_WEIGHT;
+        (weight != 0.0).then_some(weight)
+    }
+
+    fn bias_query(&self, graph: &NeuronGraph, node: usize, query: &mut [f32]) -> bool {
+        graph.ask_at(node, query);
+        true
+    }
+
+    fn bias(&self, graph: &NeuronGraph, node: usize, outputs: &[f32]) -> f32 {
+        let output = if node < graph.first_motor {
+            INTERNEURON_BIAS
+        } else {
+            MOTOR_BIAS
+        };
+        outputs[output] * MAX_BIAS
+    }
+}
+
+/// Paints the brain `cppn` describes onto `substrate`: inputs in
+/// [`InputLayout`](crate::simulation::sensors::InputLayout) order, one
+/// output per driven joint. `cppn` must have [`CPPN_INPUTS`] inputs and
+/// [`CPPN_OUTPUTS`] outputs.
+pub fn paint_brain(cppn: &CppnEvaluator, substrate: &Substrate) -> FeedforwardNetwork {
+    substrate_to_network_with(cppn, &NeuronGraph::new(substrate), &BrainPainter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::presets::MORPHOLOGY_POOL;
+    use crate::simulation::lifecycle::derive_blueprint;
+    use crate::simulation::sensors::InputLayout;
+    use rand::SeedableRng;
+    use rand_pcg::Pcg64;
+    use symbios_neat::ConnectionGene;
+
+    fn preset(index: usize) -> RobotBlueprint {
+        derive_blueprint(MORPHOLOGY_POOL[index], 3, 3)
+            .expect("preset derives")
+            .blueprint
+    }
+
+    /// A CPPN with no hidden nodes in which each listed output is
+    /// `tanh(bias + distance_weight * distance)` and every other output 0.
+    fn cppn_painting(outputs: &[(usize, f32, f32)]) -> CppnEvaluator {
+        let mut genome = NeatGenome::minimal(cppn_config());
+        let bias_node = genome.bias_id.expect("a CPPN has a bias node");
+        let distance = genome.input_ids[DISTANCE];
+        for (i, &(output, bias, distance_weight)) in outputs.iter().enumerate() {
+            let target = genome.output_ids[output];
+            let innovation = 1000 + 2 * i as u64;
+            genome
+                .connections
+                .insert(ConnectionGene::new(innovation, bias_node, target, bias));
+            genome.connections.insert(ConnectionGene::new(
+                innovation + 1,
+                distance,
+                target,
+                distance_weight,
+            ));
+        }
+        CppnEvaluator::new(&genome).expect("acyclic")
+    }
+
+    #[test]
+    fn every_preset_gets_a_neuron_per_input_and_joint() {
+        for (i, source) in MORPHOLOGY_POOL.iter().enumerate() {
+            let derived = derive_blueprint(source, 3, 3).expect("preset derives");
+            let substrate = Substrate::of_blueprint(&derived.blueprint);
+            assert_eq!(
+                substrate.num_inputs(),
+                InputLayout::of_blueprint(&derived.blueprint).total(),
+                "preset {i}"
+            );
+            assert_eq!(substrate.joints.len(), derived.num_outputs, "preset {i}");
+        }
+    }
+
+    #[test]
+    fn neurons_sit_within_the_normalized_body() {
+        let reach = 1.0 + IMU_CHANNEL_SPREAD + 1e-4;
+        for i in 0..MORPHOLOGY_POOL.len() {
+            let substrate = Substrate::of_blueprint(&preset(i));
+            for p in substrate.sensors.iter().chain(&substrate.joints) {
+                assert!(p.abs().max_element() <= reach, "preset {i}: {p}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fresh_cppn_paints_a_brain_shaped_for_any_body() {
+        let mut rng = Pcg64::seed_from_u64(4);
+        let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
+        for i in 0..MORPHOLOGY_POOL.len() {
+            let substrate = Substrate::of_blueprint(&preset(i));
+            let network = paint_brain(&cppn, &substrate);
+            assert_eq!(network.num_inputs(), substrate.num_inputs());
+            assert_eq!(network.num_outputs(), substrate.joints.len());
+            let outputs = network.evaluate(&vec![0.5; substrate.num_inputs()]);
+            assert!(outputs.iter().all(|o| o.is_finite() && o.abs() <= 1.0));
+        }
+    }
+
+    #[test]
+    fn a_silent_cppn_paints_a_resting_brain() {
+        let cppn = CppnEvaluator::new(&NeatGenome::minimal(cppn_config())).expect("acyclic");
+        let substrate = Substrate::of_blueprint(&preset(2));
+        let network = paint_brain(&cppn, &substrate);
+        let outputs = network.evaluate(&vec![1.0; substrate.num_inputs()]);
+        assert!(outputs.iter().all(|&o| o == 0.0), "{outputs:?}");
+    }
+
+    #[test]
+    fn the_clock_drives_every_joint_the_cppn_gives_a_rhythm() {
+        // Every joint's sine weight MAX_WEIGHT * tanh(5), nothing else, so
+        // every motor neuron reads tanh(weight * sine).
+        let cppn = cppn_painting(&[(CLOCK_SIN_TO_MOTOR, 5.0, 0.0)]);
+        let substrate = Substrate::of_blueprint(&preset(1));
+        let network = paint_brain(&cppn, &substrate);
+        let weight = MAX_WEIGHT * 5.0f32.tanh();
+        let mut inputs = vec![0.0; substrate.num_inputs()];
+        for sine in [1.0, 0.5, -1.0] {
+            inputs[0] = sine;
+            let expected = (weight * sine).tanh();
+            let outputs = network.evaluate(&inputs);
+            assert!(
+                outputs.iter().all(|&o| (o - expected).abs() < 1e-5),
+                "sine {sine}: {outputs:?}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cppn_can_wire_each_hinge_angle_to_its_own_motor() {
+        // Every link expressed, and sensor-to-motor weights falling from
+        // strongly positive at distance 0 to negative beyond 0.25, so each
+        // hinge's angle neuron (at the hinge) excites the motor neuron at the
+        // same hinge most.
+        let cppn = cppn_painting(&[(LINK_EXPRESSION, 5.0, 0.0), (SENSOR_TO_MOTOR, 1.5, -6.0)]);
+        let blueprint = preset(2);
+        let substrate = Substrate::of_blueprint(&blueprint);
+        let layout = InputLayout::of_blueprint(&blueprint);
+        let network = paint_brain(&cppn, &substrate);
+        // At distance 0 the weight is MAX_WEIGHT * tanh(1.5).
+        let own_expected = (MAX_WEIGHT * 1.5f32.tanh()).tanh();
+        for hinge in 0..layout.hinges {
+            let mut inputs = vec![0.0; substrate.num_inputs()];
+            inputs[layout.joint_offset(hinge)] = 1.0;
+            let outputs = network.evaluate(&inputs);
+            let own = outputs[hinge];
+            assert!(
+                (own - own_expected).abs() < 1e-5,
+                "hinge {hinge}: own motor {own}, expected {own_expected}"
+            );
+            for (other, &o) in outputs.iter().enumerate() {
+                let same_place = substrate.joints[other].distance(substrate.joints[hinge]) < 1e-4;
+                assert!(
+                    same_place || o < own,
+                    "hinge {hinge}: motor {other} {o} vs {own}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unexpressed_links_carry_nothing_however_strong() {
+        let cppn = cppn_painting(&[(LINK_EXPRESSION, -5.0, 0.0), (SENSOR_TO_MOTOR, 5.0, 0.0)]);
+        let substrate = Substrate::of_blueprint(&preset(1));
+        let network = paint_brain(&cppn, &substrate);
+        let outputs = network.evaluate(&vec![1.0; substrate.num_inputs()]);
+        assert!(outputs.iter().all(|&o| o == 0.0), "{outputs:?}");
+    }
+
+    #[test]
+    fn a_fresh_cppn_links_only_neurons_near_each_other() {
+        // A sensor reaches a motor directly when they lie within the seed's
+        // radius, or through an interneuron within it of both; beyond twice
+        // the radius it cannot reach it at all.
+        let reach = 2.0 * LOCALITY_SEED_BIAS / LOCALITY_SEED_SLOPE;
+        let mut rng = Pcg64::seed_from_u64(9);
+        let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
+        let substrate = Substrate::of_blueprint(&preset(3));
+        let network = paint_brain(&cppn, &substrate);
+        let resting = network.evaluate(&vec![0.0; substrate.num_inputs()]);
+        let mut far_pairs = 0;
+        for (sensor, &at) in substrate.sensors.iter().enumerate() {
+            let mut inputs = vec![0.0; substrate.num_inputs()];
+            inputs[NUM_CLOCK_INPUTS + sensor] = 1.0;
+            let outputs = network.evaluate(&inputs);
+            for (joint, &joint_at) in substrate.joints.iter().enumerate() {
+                if at.distance(joint_at) > reach + 1e-4 {
+                    far_pairs += 1;
+                    assert_eq!(outputs[joint], resting[joint], "sensor {sensor} -> {joint}");
+                }
+            }
+        }
+        assert!(
+            far_pairs > 0,
+            "the insect should have distant sensor-joint pairs"
+        );
+    }
+}

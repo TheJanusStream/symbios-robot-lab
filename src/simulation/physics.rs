@@ -1,19 +1,23 @@
+//! Physics constants and the windowed app's time scaling.
+
 use crate::core::config::LabConfig;
-use avian3d::prelude::*;
 use bevy::prelude::*;
 use std::time::Duration;
 
 /// Maximum number of FixedUpdate steps allowed per render frame.
 /// Prevents the "spiral of death" where FixedUpdate catch-up causes
 /// longer frames, which cause more catch-up, causing freezes.
-const MAX_FIXED_STEPS_PER_FRAME: f64 = 10.0;
+pub const MAX_FIXED_STEPS_PER_FRAME: f64 = 10.0;
 
-/// Default fixed timestep frequency in Bevy (Hz).
-const FIXED_HZ: f64 = 64.0;
+/// Bevy's fixed timestep frequency (Hz), which the physics and the
+/// generation clock run at.
+pub const FIXED_HZ: f64 = 64.0;
 
-pub fn setup_physics(mut commands: Commands) {
-    commands.insert_resource(Gravity(Vec3::NEG_Y * 9.81));
-}
+/// Solver substeps per fixed step.
+pub const SUBSTEPS: u32 = 12;
+
+/// Gravitational acceleration (m/s²).
+pub const GRAVITY: f32 = 9.81;
 
 /// Syncs the UI time-scale slider to Bevy's virtual time, which drives physics.
 /// Also caps `max_delta` to prevent the FixedUpdate spiral-of-death: at high

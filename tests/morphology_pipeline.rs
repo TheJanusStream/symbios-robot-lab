@@ -156,12 +156,70 @@ fn every_preset_parses_and_has_a_walker_topology() {
 }
 
 #[test]
-fn preset_pool_holds_five_walkers() {
-    // Lock the pool size — Sentinel/Inchworm/Snake/Biped/Starfish were
-    // removed in the v0.2 overhaul because they couldn't win against
-    // the anti-vibrobot fitness. Reverting that would silently let
-    // them back in; this test fails if the count drifts.
-    assert_eq!(MORPHOLOGY_POOL.len(), 5);
+fn preset_pool_holds_eight_walkers() {
+    // Lock the pool size: Sentinel/Inchworm/Snake/Biped/Starfish were
+    // removed in the v0.2 overhaul because they couldn't win against the
+    // anti-vibrobot fitness, and Tripod, Strider and Scout joined to bring in
+    // sliders, ball joints and distance sensing. This fails if the count
+    // drifts.
+    assert_eq!(MORPHOLOGY_POOL.len(), 8);
+}
+
+#[test]
+fn the_new_presets_slide_stand_on_limited_ankles_and_see() {
+    use symbios_robot::SensorType;
+    let prismatic = |bp: &symbios_robot::RobotBlueprint| {
+        bp.joints
+            .iter()
+            .filter(|j| matches!(j.joint_type, JointType::Prismatic { .. }))
+            .count()
+    };
+
+    // Tripod: each of the three shins slides along its leg, within the
+    // limit given for it (the last limit about the leg's axis).
+    let tripod = build_blueprint_from_source(MORPHOLOGY_POOL[5]);
+    assert_eq!(prismatic(&tripod), 3);
+    for joint in &tripod.joints {
+        if let JointType::Prismatic { axis } = joint.joint_type {
+            let own = joint
+                .limits
+                .iter()
+                .rev()
+                .find(|l| l.axis.normalize().dot(axis.normalize()).abs() > 0.999)
+                .expect("a slider has its own limit");
+            assert_eq!((own.min, own.max), (-0.15, 0.15));
+        }
+    }
+
+    // Strider: four ball-jointed ankles, each with exactly its own two
+    // limits (the leg's hinge limits cleared).
+    let strider = build_blueprint_from_source(MORPHOLOGY_POOL[6]);
+    let ankles: Vec<_> = strider
+        .joints
+        .iter()
+        .filter(|j| j.joint_type == JointType::Ball)
+        .collect();
+    assert_eq!(ankles.len(), 4);
+    for ankle in ankles {
+        let ranges: Vec<(f32, f32)> = ankle.limits.iter().map(|l| (l.min, l.max)).collect();
+        assert_eq!(ranges, vec![(-0.3, 0.3), (-0.45, 0.45)]);
+    }
+
+    // Scout: one ultrasonic eye, looking forward (+X, the direction the
+    // walker fitness rewards) and down once the robot is turned over to
+    // spawn.
+    let scout = build_blueprint_from_source(MORPHOLOGY_POOL[7]);
+    let eyes: Vec<_> = scout
+        .modules
+        .values()
+        .flat_map(|m| m.sensors.iter().map(move |s| (m, s)))
+        .filter(|(_, s)| s.sensor_type == SensorType::Ultrasonic)
+        .collect();
+    assert_eq!(eyes.len(), 1);
+    let (module, eye) = eyes[0];
+    let spawned = bevy::math::Quat::from_rotation_x(-std::f32::consts::PI);
+    let gaze = spawned * module.transform.1 * eye.local_rotation * bevy::math::Vec3::Y;
+    assert!(gaze.x > 0.5 && gaze.y < -0.5, "the eye looks along {gaze}");
 }
 
 #[test]

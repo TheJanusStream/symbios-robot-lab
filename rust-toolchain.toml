@@ -1,3 +1,12 @@
 [toolchain]
-channel = "stable"
+# A version, not a channel name, as in the sibling crates: with `stable`, CI
+# compiled with whatever rustc was newest while the local gate ran an older
+# one, so a new Rust release could turn `clippy -D warnings` red with no code
+# change here. Set to the version the local gate runs; bump it deliberately
+# and fix the new lints in one sweep.
+#
+# CI and the deploy read THIS FILE through actions-rust-lang/setup-rust-toolchain
+# rather than repeating the version in a workflow.
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

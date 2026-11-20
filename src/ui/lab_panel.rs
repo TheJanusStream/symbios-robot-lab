@@ -1,20 +1,11 @@
-use crate::core::config::{GeneticAlgorithm, LabConfig};
-use crate::core::population::Population;
-use crate::simulation::generation::{GenerationTimer, ParentPool};
-use crate::simulation::lifecycle::SpawnRequest;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-
-/// Persistent telemetry state across generations.
-#[derive(Resource, Default)]
-pub struct Telemetry {
-    pub best_all_time: f32,
-    pub best_per_generation: Vec<f32>,
-    /// Number of individuals on the NSGA-II Pareto front (rank 0).
-    pub pareto_front_size: usize,
-    /// Average fitness per generation (for SimpleGA graph).
-    pub avg_per_generation: Vec<f32>,
-}
+use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig};
+use symbios_robot_lab::core::population::Population;
+use symbios_robot_lab::simulation::clock::GenerationClock;
+use symbios_robot_lab::simulation::lifecycle::SpawnRequest;
+use symbios_robot_lab::simulation::parent_pool::ParentPool;
+use symbios_robot_lab::simulation::telemetry::Telemetry;
 
 /// Renders the main "Symbios Lab Control" egui window with algorithm selection,
 /// parameter sliders, generation status, fitness telemetry, and algorithm-specific
@@ -23,25 +14,35 @@ pub fn render_ui(
     mut contexts: EguiContexts,
     mut config: ResMut<LabConfig>,
     population: Res<Population>,
-    gen_timer: Res<GenerationTimer>,
-    mut telemetry: ResMut<Telemetry>,
-    mut parent_pool: ResMut<ParentPool>,
+    clock: Res<GenerationClock>,
+    telemetry: Res<Telemetry>,
+    parent_pool: Res<ParentPool>,
     mut spawn_writer: MessageWriter<SpawnRequest>,
 ) {
-    // Track best-of-all-time
+    // The robots' fitness so far this generation. It swings while the
+    // measured window is short, so it is shown as live and kept out of the
+    // run's statistics, which hold only finished evaluations.
     let current_best = population
         .agents
         .iter()
         .map(|a| a.fitness)
         .fold(0.0_f32, f32::max);
-    if current_best > telemetry.best_all_time {
-        telemetry.best_all_time = current_best;
-    }
 
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
     egui::Window::new("Symbios Lab Control").show(ctx, |ui| {
+        egui::CollapsingHeader::new("What is this?")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.label(format!(
+                    "Robots evolve their bodies and brains to walk forward. Each generation \
+                     lasts {:.0} s; the best walkers breed the next. Right-drag to orbit, \
+                     middle-drag to pan, scroll to zoom, click a robot to inspect it.",
+                    config.generation_duration
+                ));
+            });
+
         // Genetic algorithm selector
         egui::ComboBox::from_label("Algorithm")
             .selected_text(config.algorithm.label())
@@ -50,6 +51,21 @@ pub fn render_ui(
                     ui.selectable_value(&mut config.algorithm, alg, alg.label());
                 }
             });
+        egui::ComboBox::from_label("Brain")
+            .selected_text(config.brain.label())
+            .show_ui(ui, |ui| {
+                for brain in BrainEncoding::ALL {
+                    ui.selectable_value(&mut config.brain, brain, brain.label());
+                }
+            })
+            .response
+            .on_hover_text(
+                "Direct NEAT evolves the network itself, one input per sensor value and one \
+                 output per joint. HyperNEAT evolves a pattern that paints the network onto \
+                 the body: neurons sit at the sensors and joints, and each link's weight \
+                 depends on where its two neurons sit, so one genome fits any body. New \
+                 robots get the chosen brain; restart evolution to switch them all.",
+            );
         ui.add(egui::Slider::new(&mut config.time_scale, 0.0..=10.0).text("Time Scale"));
         ui.add(
             egui::Slider::new(&mut config.generation_duration, 5.0..=60.0).text("Gen Duration (s)"),
@@ -62,17 +78,17 @@ pub fn render_ui(
         )
         .on_hover_text(
             "One sideways impulse applied to each robot at 60% of its post-settling window. \
-             0 = off. Higher values stress-test gait stability — winners will be \
+             0 = off. Higher values stress-test gait stability; winners will be \
              perturbation-robust.",
         );
         ui.checkbox(&mut config.auto_restart, "Auto-advance generations");
 
-        if ui.button("Initialize Population").clicked() {
-            telemetry.best_all_time = 0.0;
-            telemetry.best_per_generation.clear();
-            telemetry.avg_per_generation.clear();
-            telemetry.pareto_front_size = 0;
-            parent_pool.clear();
+        // A new run also clears the parent pool and the statistics.
+        if ui
+            .button("Restart evolution")
+            .on_hover_text("Start over from a fresh population of preset bodies")
+            .clicked()
+        {
             spawn_writer.write(SpawnRequest);
         }
 
@@ -82,24 +98,23 @@ pub fn render_ui(
         ui.label(format!("Generation: {}", population.generation));
         ui.label(format!("Population: {}", population.agents.len()));
 
-        // Timer
-        if gen_timer.active {
-            let remaining = gen_timer.timer.remaining_secs();
-            let duration = gen_timer.timer.duration().as_secs_f32();
+        if clock.is_running() {
             ui.label(format!(
                 "Time remaining: {:.1}s / {:.1}s",
-                remaining, duration
+                clock.remaining_secs(),
+                clock.duration_secs()
             ));
-            let progress = 1.0 - (remaining / duration);
-            ui.add(egui::ProgressBar::new(progress).text("Generation progress"));
+            ui.add(egui::ProgressBar::new(clock.progress()).text("Generation progress"));
         }
 
         ui.separator();
 
         // Fitness telemetry
         ui.heading("Fitness");
-        ui.label(format!("Current best: {:.5}", current_best));
-        ui.label(format!("All-time best: {:.5}", telemetry.best_all_time));
+        ui.label(format!("Live best (this generation): {current_best:.5}"))
+            .on_hover_text("Fitness measured so far; it settles as the generation runs");
+        ui.label(format!("Best evaluated: {:.5}", telemetry.best_all_time))
+            .on_hover_text("The best score any finished generation has given a robot");
         match config.algorithm {
             GeneticAlgorithm::Nsga2 => {
                 ui.label(format!(
@@ -124,8 +139,8 @@ pub fn render_ui(
                 ));
             }
             GeneticAlgorithm::SimpleGA => {
-                if let Some(&avg) = telemetry.avg_per_generation.last() {
-                    ui.label(format!("Avg fitness: {:.5}", avg));
+                if let Some(last) = telemetry.history.last() {
+                    ui.label(format!("Avg fitness: {:.5}", last.mean_fitness));
                 }
             }
         }
@@ -136,7 +151,7 @@ pub fn render_ui(
             GeneticAlgorithm::MapElites | GeneticAlgorithm::CvtMapElites
         ) && ui.button("Export archive CSV").clicked()
         {
-            export_archive_to_disk(&parent_pool, config.algorithm);
+            export_archive(&parent_pool, config.algorithm);
         }
 
         // Population fitness heatmap (sorted bar visualization)
@@ -169,11 +184,12 @@ pub fn render_ui(
         }
 
         // Generation history graph
-        if telemetry.best_per_generation.len() >= 2 {
+        let best_series = telemetry.best_series();
+        if best_series.len() >= 2 {
             ui.separator();
             ui.label("Best fitness per generation:");
 
-            let data = &telemetry.best_per_generation;
+            let data = &best_series;
             let max_val = data.iter().copied().fold(0.01_f32, f32::max);
             let graph_width = ui.available_width();
             let graph_height = 80.0;
@@ -514,26 +530,26 @@ pub fn render_ui(
             painter.text(
                 rect.right_bottom() + egui::vec2(-2.0, -2.0),
                 egui::Align2::RIGHT_BOTTOM,
-                "up-align",
+                "support-duty",
                 egui::FontId::proportional(9.0),
                 egui::Color32::from_gray(120),
             );
             painter.text(
                 rect.left_top() + egui::vec2(2.0, 2.0),
                 egui::Align2::LEFT_TOP,
-                "height",
+                "action-int",
                 egui::FontId::proportional(9.0),
                 egui::Color32::from_gray(120),
             );
         }
 
         // SimpleGA: average fitness per generation graph
-        if config.algorithm == GeneticAlgorithm::SimpleGA && telemetry.avg_per_generation.len() >= 2
-        {
+        let mean_series = telemetry.mean_series();
+        if config.algorithm == GeneticAlgorithm::SimpleGA && mean_series.len() >= 2 {
             ui.separator();
             ui.label("Avg fitness per generation:");
 
-            let data = &telemetry.avg_per_generation;
+            let data = &mean_series;
             let max_val = data.iter().copied().fold(0.01_f32, f32::max);
             let graph_width = ui.available_width();
             let graph_height = 80.0;
@@ -604,22 +620,27 @@ pub fn render_ui(
     });
 }
 
-/// Writes the current quality-diversity archive (grid MAP-Elites or CVT) to a
-/// timestamped CSV in the working directory. Logged on success/failure;
-/// invoked from the egui "Export archive CSV" button.
-fn export_archive_to_disk(parent_pool: &ParentPool, algorithm: GeneticAlgorithm) {
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+/// Saves the current quality-diversity archive (grid MAP-Elites or CVT) as a
+/// timestamped CSV: a file in the working directory on the desktop, a
+/// download in the browser. Invoked by the "Export archive CSV" button.
+fn export_archive(parent_pool: &ParentPool, algorithm: GeneticAlgorithm) {
     let suffix = match algorithm {
         GeneticAlgorithm::MapElites => "grid",
         GeneticAlgorithm::CvtMapElites => "cvt",
         _ => return,
     };
-    let path = format!("archive_{suffix}_{timestamp}.csv");
-    match std::fs::File::create(&path) {
-        Ok(file) => match parent_pool.export_archive_csv(algorithm, file) {
-            Ok(rows) => info!("Exported {} archive cells to {}", rows, path),
-            Err(e) => warn!("Archive CSV write failed: {}", e),
-        },
-        Err(e) => warn!("Could not create {}: {}", path, e),
+    let mut csv = Vec::new();
+    let rows = match parent_pool.export_archive_csv(algorithm, &mut csv) {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("Archive CSV could not be written: {e}");
+            return;
+        }
+    };
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let file_name = format!("archive_{suffix}_{timestamp}.csv");
+    match super::download::save_file(&file_name, "text/csv", &csv) {
+        Ok(()) => info!("Exported {rows} archive cells to {file_name}"),
+        Err(e) => warn!("Could not save {file_name}: {e}"),
     }
 }

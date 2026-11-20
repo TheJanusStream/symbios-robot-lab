@@ -17,6 +17,13 @@ pub struct Agent {
     pub body_entity: Option<Entity>,
     /// Cached blueprint from L-System derivation, avoids re-parsing at spawn.
     pub cached_blueprint: Option<RobotBlueprint>,
+    /// Set when the physics blew the robot apart this generation. An exploded
+    /// agent is despawned at once and scores as dominated by every intact
+    /// one, whatever its metrics read before the explosion.
+    pub exploded: bool,
+    /// Total mass of the robot's modules (kg), the denominator of the Cost
+    /// of Transport. Set at spawn.
+    pub mass: f32,
     /// Cumulative commanded-velocity energy proxy (kept for inspector display).
     pub energy_consumed: f32,
     /// Horizontal displacement from baseline (set by scoring).
@@ -73,6 +80,8 @@ impl Agent {
             root_entity: None,
             body_entity: None,
             cached_blueprint,
+            exploded: false,
+            mass: 0.0,
             energy_consumed: 0.0,
             displacement: 0.0,
             avg_up_alignment: 0.0,
@@ -111,6 +120,7 @@ impl Population {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::BrainEncoding;
     use crate::core::genome::AgentGenotype;
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
@@ -123,7 +133,12 @@ mod tests {
             ..NeatConfig::default()
         };
         Agent::fresh(
-            AgentGenotype::new("omega: B(1)".to_string(), &config, rng),
+            AgentGenotype::new(
+                "omega: B(1)".to_string(),
+                0,
+                BrainEncoding::Direct,
+                symbios_neat::NeatGenome::fully_connected(config, rng),
+            ),
             0,
             None,
         )

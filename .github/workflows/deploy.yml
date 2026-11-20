@@ -16,15 +16,17 @@ concurrency:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Reads the pinned version and the wasm32 target from rust-toolchain.toml.
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: wasm32-unknown-unknown
+          target: wasm32-unknown-unknown
+          cache: false
 
       # Must equal the `wasm-bindgen = "=X"` pin in Cargo.toml: a CLI whose
       # version differs from the crate's refuses the module.
@@ -37,15 +39,16 @@ jobs:
           tar -xzf binaryen-version_119-x86_64-linux.tar.gz
           echo "$(pwd)/binaryen-version_119/bin" >> $GITHUB_PATH
 
+      # The size-tuned profile (Cargo.toml) and the app's binary only.
       - name: Build WASM
-        run: cargo build --release --target wasm32-unknown-unknown
+        run: cargo build --profile wasm-release --target wasm32-unknown-unknown --bin symbios-robot-lab
 
       - name: Generate JS Bindings
         run: |
           wasm-bindgen --out-dir ./dist --target web \
             --out-name symbios-robot-lab \
             --no-typescript \
-            target/wasm32-unknown-unknown/release/symbios-robot-lab.wasm
+            target/wasm32-unknown-unknown/wasm-release/symbios-robot-lab.wasm
 
       - name: Optimize WASM
         run: wasm-opt -Oz -o ./dist/symbios-robot-lab_bg.wasm ./dist/symbios-robot-lab_bg.wasm

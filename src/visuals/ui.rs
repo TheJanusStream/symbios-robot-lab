@@ -1,7 +1,7 @@
-use crate::simulation::brain::RobotBrain;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_panorbit_camera::PanOrbitCamera;
+use symbios_robot_lab::simulation::brain::RobotBrain;
 
 /// Tracks which agent the camera is following, if any.
 #[derive(Resource, Default)]

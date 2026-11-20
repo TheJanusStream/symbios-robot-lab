@@ -1,0 +1,137 @@
+//! Evolution without a window: no renderer and no frame pacing, fixed steps
+//! as fast as the machine allows. Used by the tests and `examples/evolve.rs`.
+//!
+//! ```no_run
+//! use symbios_robot_lab::core::config::LabConfig;
+//! use symbios_robot_lab::headless::HeadlessLab;
+//!
+//! let config = LabConfig { seed: Some(7), ..LabConfig::default() };
+//! let mut lab = HeadlessLab::new(config);
+//! let telemetry = lab.run(10, |g| println!("{}: {:.3}", g.generation, g.best_fitness)).unwrap();
+//! println!("best: {}", telemetry.best_all_time);
+//! ```
+
+use crate::core::config::LabConfig;
+use crate::core::population::Population;
+use crate::simulation::SimulationPlugin;
+use crate::simulation::lifecycle::SpawnRequest;
+use crate::simulation::physics::FIXED_HZ;
+use crate::simulation::rng::LabRng;
+use crate::simulation::telemetry::{GenerationSummary, Telemetry};
+use bevy::prelude::*;
+use bevy::time::TimeUpdateStrategy;
+use std::time::Duration;
+
+/// Fixed steps per app update. Bevy caps one frame's virtual time at 250 ms
+/// (16 steps at 64 Hz), so this stays under it.
+const STEPS_PER_UPDATE: u32 = 10;
+
+/// Updates allowed per generation beyond its own steps before a run is
+/// declared stalled (spawning and breeding take an update or two).
+const STALL_SLACK_UPDATES: usize = 16;
+
+/// Why a headless run stopped early.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadlessError {
+    /// No generation finished within the step budget.
+    Stalled { finished: usize, wanted: usize },
+}
+
+impl std::fmt::Display for HeadlessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HeadlessError::Stalled { finished, wanted } => write!(
+                f,
+                "the run stalled after {finished} of {wanted} generations"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HeadlessError {}
+
+/// A windowless lab: the simulation plugin on a minimal Bevy app whose clock
+/// is advanced by hand.
+pub struct HeadlessLab {
+    app: App,
+}
+
+impl HeadlessLab {
+    /// A lab that will run with `config`. `auto_restart` is forced on, since
+    /// a headless run has nobody to press "next generation".
+    pub fn new(config: LabConfig) -> Self {
+        let config = LabConfig {
+            auto_restart: true,
+            ..config
+        };
+        let mut app = App::new();
+        // One thread: avian's parallel solver orders contacts by whichever
+        // thread finishes first, and a chaotic simulation turns that into a
+        // different run. Single-threaded, a seed repeats exactly; run several
+        // seeds as separate processes to use more cores.
+        let single_threaded = TaskPoolPlugin {
+            task_pool_options: TaskPoolOptions::with_num_threads(1),
+        };
+        app.add_plugins((MinimalPlugins.set(single_threaded), TransformPlugin))
+            .insert_resource(config)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+                f64::from(STEPS_PER_UPDATE) / FIXED_HZ,
+            )))
+            .add_plugins(SimulationPlugin);
+        app.finish();
+        app.cleanup();
+        Self { app }
+    }
+
+    /// Starts a new run and steps until `generations` generations have
+    /// finished, calling `on_generation` after each one. Returns the run's
+    /// telemetry.
+    pub fn run(
+        &mut self,
+        generations: usize,
+        mut on_generation: impl FnMut(&GenerationSummary),
+    ) -> Result<&Telemetry, HeadlessError> {
+        self.app.world_mut().write_message(SpawnRequest);
+        let config = self.app.world().resource::<LabConfig>();
+        let steps_per_generation =
+            (f64::from(config.generation_duration) * FIXED_HZ).ceil() as usize;
+        let budget = generations
+            * (steps_per_generation / STEPS_PER_UPDATE as usize + STALL_SLACK_UPDATES)
+            + STALL_SLACK_UPDATES;
+
+        let mut reported = 0;
+        for _ in 0..budget {
+            self.app.update();
+            let history = &self.app.world().resource::<Telemetry>().history;
+            while reported < history.len().min(generations) {
+                on_generation(&history[reported]);
+                reported += 1;
+            }
+            if reported == generations {
+                return Ok(self.telemetry());
+            }
+        }
+        Err(HeadlessError::Stalled {
+            finished: reported,
+            wanted: generations,
+        })
+    }
+
+    pub fn telemetry(&self) -> &Telemetry {
+        self.app.world().resource::<Telemetry>()
+    }
+
+    pub fn population(&self) -> &Population {
+        self.app.world().resource::<Population>()
+    }
+
+    /// The seed the run drew from (set or drawn at startup).
+    pub fn seed(&self) -> Option<u64> {
+        self.app.world().get_resource::<LabRng>().map(LabRng::seed)
+    }
+
+    /// The underlying app, for tests that inspect the world.
+    pub fn app_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+}

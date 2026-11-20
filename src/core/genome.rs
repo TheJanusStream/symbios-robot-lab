@@ -1,3 +1,4 @@
+use crate::core::config::BrainEncoding;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use symbios::System;
@@ -9,7 +10,7 @@ use symbios::system::mutate::{
 use symbios_genetics::Genotype;
 use symbios_neat::NeatGenome;
 
-/// Combined genotype for body (L-System morphology) and brain (NEAT network).
+/// Combined genotype for body (L-System morphology) and brain (NEAT genome).
 ///
 /// Implements `Genotype` for mutation and crossover. The L-System is mutated
 /// through parametric, structural, topological, and operator-flip operators;
@@ -19,8 +20,15 @@ pub struct AgentGenotype {
     /// The Body: L-System source code that generates the RobotBlueprint
     pub morphology: String,
 
-    /// The Brain: NEAT Genome that controls the joints
+    /// The Brain: a NEAT genome that is either the network that drives the
+    /// joints or a CPPN that paints that network onto the body, as
+    /// `encoding` says.
     pub controller: NeatGenome,
+
+    /// How `controller` becomes a brain. Archives written before HyperNEAT
+    /// hold direct genomes.
+    #[serde(default = "BrainEncoding::legacy")]
+    pub encoding: BrainEncoding,
 
     /// Shared metrics
     pub generation: usize,
@@ -30,28 +38,33 @@ pub struct AgentGenotype {
 
     /// Number of L-System derivation steps (controls morphological complexity).
     pub lsystem_iterations: usize,
-
-    /// Cached brain topology `(num_inputs, num_outputs)` derived from the
-    /// morphology's L-System. Avoids re-parsing the L-System every time the
-    /// counts are needed (e.g. at generation boundaries and spawn).
-    /// `None` means "not yet computed" — will be derived on first use.
-    #[serde(skip)]
-    pub cached_topology: Option<(usize, usize)>,
 }
 
+/// L-System derivation steps a fresh genotype starts with.
+pub const INITIAL_LSYSTEM_ITERATIONS: usize = 3;
+
 impl AgentGenotype {
+    /// A fresh genotype whose body is `morphology` derived with
+    /// `lsystem_seed` for [`INITIAL_LSYSTEM_ITERATIONS`] steps, and whose
+    /// brain is `controller`, read as `encoding` says.
+    ///
+    /// The seed is the caller's because the caller has usually derived the
+    /// body already, to size the brain from its sensors and joints: drawing a
+    /// different seed here would score one body and breed another whenever
+    /// the morphology has stochastic rules.
     pub fn new(
         morphology: String,
-        neat_config: &symbios_neat::NeatConfig,
-        rng: &mut impl Rng,
+        lsystem_seed: u64,
+        encoding: BrainEncoding,
+        controller: NeatGenome,
     ) -> Self {
         Self {
             morphology,
-            controller: NeatGenome::fully_connected(neat_config.clone(), rng),
+            controller,
+            encoding,
             generation: 0,
-            lsystem_seed: rng.random(),
-            lsystem_iterations: 3,
-            cached_topology: Some((neat_config.num_inputs, neat_config.num_outputs)),
+            lsystem_seed,
+            lsystem_iterations: INITIAL_LSYSTEM_ITERATIONS,
         }
     }
 }
@@ -158,9 +171,19 @@ impl Genotype for AgentGenotype {
             _ => self.morphology.clone(),
         };
 
+        // A direct genome and a CPPN cannot be aligned gene by gene, so a
+        // child of mixed parents (the brain setting changed mid-run) keeps
+        // this parent's brain: the selector hands the fitter parent first.
+        let controller = if self.encoding == other.encoding {
+            self.controller.crossover(&other.controller, rng)
+        } else {
+            self.controller.clone()
+        };
+
         Self {
             morphology,
-            controller: self.controller.crossover(&other.controller, rng),
+            controller,
+            encoding: self.encoding,
             generation: self.generation.max(other.generation) + 1,
             lsystem_seed: if rng.random_bool(0.5) {
                 self.lsystem_seed
@@ -172,7 +195,6 @@ impl Genotype for AgentGenotype {
             } else {
                 other.lsystem_iterations
             },
-            cached_topology: None,
         }
     }
 }
@@ -198,7 +220,59 @@ mod tests {
     }
 
     fn make_genotype(rng: &mut Pcg64) -> AgentGenotype {
-        AgentGenotype::new(test_morphology(), &test_neat_config(), rng)
+        AgentGenotype::new(
+            test_morphology(),
+            7,
+            BrainEncoding::Direct,
+            NeatGenome::fully_connected(test_neat_config(), rng),
+        )
+    }
+
+    fn make_cppn_genotype(rng: &mut Pcg64) -> AgentGenotype {
+        AgentGenotype::new(
+            test_morphology(),
+            7,
+            BrainEncoding::HyperNeat,
+            NeatGenome::fully_connected(NeatConfig::cppn(7, 8), rng),
+        )
+    }
+
+    #[test]
+    fn new_genotype_keeps_the_seed_its_body_was_derived_with() {
+        let mut rng = Pcg64::seed_from_u64(1);
+        let g = AgentGenotype::new(
+            test_morphology(),
+            1234,
+            BrainEncoding::Direct,
+            NeatGenome::fully_connected(test_neat_config(), &mut rng),
+        );
+        assert_eq!(g.lsystem_seed, 1234);
+        assert_eq!(g.lsystem_iterations, INITIAL_LSYSTEM_ITERATIONS);
+    }
+
+    #[test]
+    fn a_child_of_mixed_encodings_keeps_the_first_parents_brain() {
+        let mut rng = Pcg64::seed_from_u64(3);
+        let direct = make_genotype(&mut rng);
+        let cppn = make_cppn_genotype(&mut rng);
+        let child = cppn.crossover(&direct, &mut rng);
+        assert_eq!(child.encoding, BrainEncoding::HyperNeat);
+        assert_eq!(child.controller.input_ids.len(), 7);
+        let child = direct.crossover(&cppn, &mut rng);
+        assert_eq!(child.encoding, BrainEncoding::Direct);
+        assert_eq!(child.controller.input_ids.len(), 4);
+    }
+
+    #[test]
+    fn an_archive_written_before_hyperneat_reads_as_direct() {
+        let mut rng = Pcg64::seed_from_u64(5);
+        let mut json = serde_json::to_value(make_genotype(&mut rng)).expect("serialize");
+        json.as_object_mut()
+            .expect("an object")
+            .remove("encoding")
+            .expect("has an encoding");
+        let g: AgentGenotype = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(g.encoding, BrainEncoding::Direct);
     }
 
     #[test]
@@ -264,7 +338,12 @@ mod tests {
     #[test]
     fn morphology_survives_mutation_roundtrip() {
         let mut rng = Pcg64::seed_from_u64(99);
-        let mut g = AgentGenotype::new(test_morphology(), &test_neat_config(), &mut rng);
+        let mut g = AgentGenotype::new(
+            test_morphology(),
+            99,
+            BrainEncoding::Direct,
+            NeatGenome::fully_connected(test_neat_config(), &mut rng),
+        );
 
         g.mutate(&mut rng, 0.5);
 
@@ -286,6 +365,7 @@ mod tests {
 
         assert_eq!(g.morphology, g2.morphology);
         assert_eq!(g.generation, g2.generation);
+        assert_eq!(g.encoding, g2.encoding);
         assert_eq!(g.controller.input_ids.len(), g2.controller.input_ids.len());
     }
 }

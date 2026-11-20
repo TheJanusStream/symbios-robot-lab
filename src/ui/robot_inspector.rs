@@ -1,11 +1,14 @@
-use crate::core::population::Population;
-use crate::simulation::brain::{
-    AgentImu, AgentJoint, AgentTouch, AgentUltrasonic, INPUTS_PER_IMU, INPUTS_PER_JOINT,
-    INPUTS_PER_TOUCH, INPUTS_PER_ULTRASONIC, NUM_CLOCK_INPUTS, RobotBrain,
-};
 use crate::visuals::ui::CameraTarget;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use symbios_robot_lab::core::config::BrainEncoding;
+use symbios_robot_lab::core::population::Population;
+use symbios_robot_lab::simulation::brain::RobotBrain;
+use symbios_robot_lab::simulation::metrics::AgentMetrics;
+use symbios_robot_lab::simulation::sensors::{
+    AgentImu, AgentJoint, AgentSlider, AgentTouch, AgentUltrasonic, INPUTS_PER_IMU, InputLayout,
+    NUM_CLOCK_INPUTS,
+};
 
 /// Renders an inspector window for the currently selected robot.
 /// Only visible when `CameraTarget.agent_index` is `Some`.
@@ -16,18 +19,20 @@ use bevy_egui::{EguiContexts, egui};
 pub fn render_robot_inspector(
     mut contexts: EguiContexts,
     target: Res<CameraTarget>,
-    brains: Query<(Entity, &RobotBrain)>,
+    brains: Query<(Entity, &RobotBrain, &AgentMetrics)>,
     population: Res<Population>,
     imus: Query<&AgentImu>,
     touches: Query<&AgentTouch>,
     ultrasonics: Query<&AgentUltrasonic>,
     joints: Query<&AgentJoint>,
+    sliders: Query<&AgentSlider>,
 ) {
     let Some(agent_index) = target.agent_index else {
         return;
     };
 
-    let Some((brain_entity, brain)) = brains.iter().find(|(_, b)| b.agent_index == agent_index)
+    let Some((brain_entity, brain, live)) =
+        brains.iter().find(|(_, b, _)| b.agent_index == agent_index)
     else {
         return;
     };
@@ -106,52 +111,87 @@ pub fn render_robot_inspector(
             // --- Live brain metrics ---
             ui.separator();
             ui.heading("Live");
-            let ticks = brain.metric_ticks.max(1) as f32;
+            let ticks = live.metric_ticks.max(1) as f32;
             egui::Grid::new("live_grid")
                 .num_columns(2)
                 .spacing([8.0, 2.0])
                 .show(ui, |ui| {
                     ui.label("Energy:");
-                    ui.label(format!("{:.1}", brain.energy_consumed));
+                    ui.label(format!("{:.1}", live.energy_consumed));
                     ui.end_row();
                     ui.label("Up-alignment:");
-                    ui.label(format!("{:.3}", brain.up_alignment_sum / ticks));
+                    ui.label(format!("{:.3}", live.up_alignment_sum / ticks));
                     ui.end_row();
                     ui.label("Height:");
-                    ui.label(format!("{:.3}", brain.height_sum / ticks));
+                    ui.label(format!("{:.3}", live.height_sum / ticks));
                     ui.end_row();
                 });
 
             // --- Topology ---
-            let num_imus = imus
-                .iter()
-                .filter(|i| i.brain_entity == brain_entity)
-                .count();
-            let num_touches = touches
-                .iter()
-                .filter(|t| t.brain_entity == brain_entity)
-                .count();
-            let num_ultrasonics = ultrasonics
-                .iter()
-                .filter(|u| u.brain_entity == brain_entity)
-                .count();
-            let num_joints = joints
-                .iter()
-                .filter(|j| j.brain_entity == brain_entity)
-                .count();
-            let num_prismatics = brain.prismatic_entities.len();
+            let layout = InputLayout {
+                imus: imus
+                    .iter()
+                    .filter(|i| i.brain_entity == brain_entity)
+                    .count(),
+                touches: touches
+                    .iter()
+                    .filter(|t| t.brain_entity == brain_entity)
+                    .count(),
+                ultrasonics: ultrasonics
+                    .iter()
+                    .filter(|u| u.brain_entity == brain_entity)
+                    .count(),
+                hinges: joints
+                    .iter()
+                    .filter(|j| j.brain_entity == brain_entity)
+                    .count(),
+                sliders: sliders
+                    .iter()
+                    .filter(|s| s.brain_entity == brain_entity)
+                    .count(),
+            };
+            let (num_imus, num_touches, num_ultrasonics, num_joints) = (
+                layout.imus,
+                layout.touches,
+                layout.ultrasonics,
+                layout.hinges,
+            );
+            let num_prismatics = brain.prismatic_joints.len();
 
+            let genotype = population.agents.get(agent_index).map(|a| &a.genotype);
             ui.separator();
             ui.heading("Topology");
             egui::Grid::new("topology_grid")
                 .num_columns(2)
                 .spacing([8.0, 2.0])
                 .show(ui, |ui| {
+                    if let Some(genotype) = genotype {
+                        ui.label("Brain:");
+                        ui.label(genotype.encoding.label());
+                        ui.end_row();
+                        if genotype.encoding == BrainEncoding::HyperNeat {
+                            ui.label("CPPN:").on_hover_text(
+                                "The evolved pattern generator that paints this robot's network",
+                            );
+                            ui.label(format!(
+                                "{} nodes, {} links",
+                                genotype.controller.nodes.len(),
+                                genotype.controller.num_enabled_connections()
+                            ));
+                            ui.end_row();
+                        }
+                    }
                     ui.label("Inputs:");
                     ui.label(format!("{}", brain.sensor_inputs.len()));
                     ui.end_row();
                     ui.label("Outputs:");
                     ui.label(format!("{}", num_joints + num_prismatics));
+                    ui.end_row();
+                    ui.label("Links:").on_hover_text(
+                        "Weighted connections in the network (for HyperNEAT, how many of the \
+                         candidate links its CPPN expressed)",
+                    );
+                    ui.label(format!("{}", brain.network.num_connections()));
                     ui.end_row();
                     ui.label("IMUs:");
                     ui.label(format!("{num_imus}"));
@@ -198,53 +238,32 @@ pub fn render_robot_inspector(
                                 ui.end_row();
                             }
 
-                            // IMU inputs
-                            let imu_start = NUM_CLOCK_INPUTS;
+                            let row = |ui: &mut egui::Ui, label: String, idx: usize| {
+                                if let Some(value) = inputs.get(idx) {
+                                    ui.label(label);
+                                    ui.label(format!("{value:+.3}"));
+                                    ui.end_row();
+                                }
+                            };
+                            let imu_labels =
+                                ["lin_ax", "lin_ay", "lin_az", "ang_ax", "ang_ay", "ang_az"];
                             for i in 0..num_imus {
-                                let base = imu_start + i * INPUTS_PER_IMU;
-                                let labels =
-                                    ["lin_ax", "lin_ay", "lin_az", "ang_ax", "ang_ay", "ang_az"];
-                                for (j, label) in labels.iter().enumerate() {
-                                    let idx = base + j;
-                                    if idx < inputs.len() {
-                                        ui.label(format!("imu{i}.{label}:"));
-                                        ui.label(format!("{:+.3}", inputs[idx]));
-                                        ui.end_row();
-                                    }
+                                for (j, label) in imu_labels.iter().enumerate().take(INPUTS_PER_IMU)
+                                {
+                                    row(ui, format!("imu{i}.{label}:"), layout.imu_offset(i) + j);
                                 }
                             }
-
-                            // Touch inputs
-                            let touch_start = imu_start + num_imus * INPUTS_PER_IMU;
                             for i in 0..num_touches {
-                                let idx = touch_start + i * INPUTS_PER_TOUCH;
-                                if idx < inputs.len() {
-                                    ui.label(format!("touch{i}:"));
-                                    ui.label(format!("{:.0}", inputs[idx]));
-                                    ui.end_row();
-                                }
+                                row(ui, format!("touch{i}:"), layout.touch_offset(i));
                             }
-
-                            // Ultrasonic inputs
-                            let ultra_start = touch_start + num_touches * INPUTS_PER_TOUCH;
                             for i in 0..num_ultrasonics {
-                                let idx = ultra_start + i * INPUTS_PER_ULTRASONIC;
-                                if idx < inputs.len() {
-                                    ui.label(format!("ultra{i}:"));
-                                    ui.label(format!("{:.3}", inputs[idx]));
-                                    ui.end_row();
-                                }
+                                row(ui, format!("ultra{i}:"), layout.ultrasonic_offset(i));
                             }
-
-                            // Joint angle inputs
-                            let joint_start = ultra_start + num_ultrasonics * INPUTS_PER_ULTRASONIC;
                             for i in 0..num_joints {
-                                let idx = joint_start + i * INPUTS_PER_JOINT;
-                                if idx < inputs.len() {
-                                    ui.label(format!("joint{i}.angle:"));
-                                    ui.label(format!("{:+.3}", inputs[idx]));
-                                    ui.end_row();
-                                }
+                                row(ui, format!("joint{i}.angle:"), layout.joint_offset(i));
+                            }
+                            for i in 0..layout.sliders {
+                                row(ui, format!("slider{i}.extension:"), layout.slider_offset(i));
                             }
                         });
                 });

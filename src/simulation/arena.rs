@@ -1,49 +1,29 @@
-use std::f32::consts::TAU;
+//! The arena's physics: a static floor. Lights, camera and the floor's look
+//! belong to the windowed app.
 
+use crate::simulation::collision::arena_layers;
 use avian3d::prelude::*;
-use bevy::{post_process::bloom::Bloom, prelude::*};
-use bevy_panorbit_camera::PanOrbitCamera;
+use bevy::prelude::*;
 
-pub fn setup_arena(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    // 1. The Arena Floor
+/// Marker for the arena floor entity.
+#[derive(Component)]
+pub struct ArenaFloor;
+
+/// Side length of the square floor (m).
+pub const FLOOR_SIZE: f32 = 500.0;
+
+/// Thickness of the floor's collider (m).
+const FLOOR_THICKNESS: f32 = 0.1;
+
+/// Spawns the floor collider with its top face at `y = 0`, where robots are
+/// placed: a collider centred on `y = 0` would start every foot inside it.
+pub fn setup_arena(mut commands: Commands) {
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(500.0, 500.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.1, 0.1, 0.15),
-            perceptual_roughness: 0.8,
-            ..default()
-        })),
-        Transform::IDENTITY,
+        ArenaFloor,
+        Name::new("Arena floor"),
+        Transform::from_xyz(0.0, -FLOOR_THICKNESS / 2.0, 0.0),
         RigidBody::Static,
-        Collider::cuboid(500.0, 0.1, 500.0),
-    ));
-
-    // 2. Lighting
-    commands.spawn((
-        DirectionalLight {
-            shadow_maps_enabled: true,
-            illuminance: 10_000.0,
-            ..default()
-        },
-        Transform::from_xyz(20.0, 50.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // 3. Camera
-    commands.spawn((
-        PanOrbitCamera {
-            focus: Vec3::new(-25.0, 0.0, -15.0),
-            yaw: Some(-TAU / 5.0),
-            pitch: Some(TAU / 8.0),
-            radius: Some(80.0),
-            button_orbit: MouseButton::Right,
-            button_pan: MouseButton::Middle,
-            ..default()
-        },
-        Camera3d::default(),
-        Bloom::NATURAL, // Enable Bloom
+        Collider::cuboid(FLOOR_SIZE, FLOOR_THICKNESS, FLOOR_SIZE),
+        arena_layers(),
     ));
 }

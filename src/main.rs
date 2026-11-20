@@ -1,122 +1,58 @@
-use avian3d::{PhysicsPlugins, prelude::SubstepCount};
+//! The windowed lab: the simulation from the library, drawn, with the egui
+//! control panel and robot inspector.
+
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
-use bevy_symbios::loader::{LSystemAssetPlugin, LSystemSource};
-use bevy_symbios::materials::{
-    MaterialSettingsChanged, apply_foliage_textures, on_material_settings_changed,
-};
+use symbios_robot_lab::simulation::lifecycle::SpawnRequest;
+use symbios_robot_lab::simulation::physics::sync_time_scale;
+use symbios_robot_lab::simulation::{EvolutionSystems, SimulationPlugin};
 
-mod core;
-mod simulation;
 mod ui;
 mod visuals;
-use crate::simulation::lifecycle::SpawnRequest;
 
 fn main() {
-    App::new()
-        .add_plugins((
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Symbios Robot Lab".into(),
-                    resolution: WindowResolution::new(1600, 900),
-                    ..default()
-                }),
+    let mut app = App::new();
+    app.add_plugins((
+        DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Symbios Robot Lab".into(),
+                resolution: WindowResolution::new(1600, 900),
                 ..default()
             }),
-            EguiPlugin::default(),
-            PanOrbitCameraPlugin,
-            PhysicsPlugins::default(),
-            LSystemAssetPlugin,
-        ))
-        .add_message::<SpawnRequest>()
-        .add_message::<AssetEvent<LSystemSource>>()
-        // Resources
-        .insert_resource(SubstepCount(12))
-        .init_resource::<core::config::LabConfig>()
-        .init_resource::<core::population::Population>()
-        .init_resource::<core::hotload::RuntimeMorphologyPool>()
-        .init_resource::<bevy_symbios::materials::MaterialSettingsMap>()
-        .init_resource::<simulation::generation::GenerationTimer>()
-        .init_resource::<simulation::generation::ParentPool>()
-        .init_resource::<ui::lab_panel::Telemetry>()
-        .init_resource::<visuals::ui::CameraTarget>()
-        // Startup
-        .add_systems(
-            Startup,
-            (
-                simulation::arena::setup_arena,
-                simulation::physics::setup_physics,
-                visuals::robot_render::setup_materials,
-                trigger_initial_material_sync,
-                core::hotload::load_morphologies_folder,
-            )
-                .chain(),
-        )
-        // Observer: applies MaterialSettingsMap to StandardMaterials whenever
-        // MaterialSettingsChanged is triggered (replaces the old polling system).
-        .add_observer(on_material_settings_changed)
-        // UI (egui pass)
-        .add_systems(
-            EguiPrimaryContextPass,
-            (
-                ui::lab_panel::render_ui,
-                ui::robot_inspector::render_robot_inspector,
-            ),
-        )
-        // Update — ordered pipeline for population lifecycle and spawning.
-        // Neural evaluation and scoring run in FixedUpdate (see below).
-        .add_systems(
-            Update,
-            (
-                // 1. Population lifecycle: despawn old / create new population
-                (
-                    simulation::lifecycle::manage_generations,
-                    simulation::generation::tick_generation,
-                ),
-                // 2. React to population changes: spawn entities, start timer
-                (
-                    visuals::robot_render::spawn_agents,
-                    simulation::generation::activate_timer,
-                ),
-                // 3. Tag newly spawned entities
-                simulation::collision::assign_collision_layers,
-            )
-                .chain(),
-        )
-        // FixedUpdate — neural evaluation and scoring locked to the physics
-        // timestep. Prevents wasted CPU on frames the physics engine skips,
-        // and gives IMU sensors a stable dt for acceleration computation.
-        .add_systems(
-            FixedUpdate,
-            (
-                simulation::scoring::check_explosion,
-                simulation::brain::gather_sensor_inputs,
-                simulation::brain::drive_motors,
-                simulation::scoring::apply_perturbations,
-                simulation::scoring::track_metrics,
-                simulation::scoring::update_fitness_scores,
-            )
-                .chain(),
-        )
-        .add_systems(
-            Update,
-            (
-                simulation::physics::sync_time_scale,
-                visuals::ui::click_to_follow,
-                visuals::ui::follow_target,
-                apply_foliage_textures,
-                core::hotload::refresh_runtime_pool,
-            ),
-        )
-        .run();
+            ..default()
+        }),
+        EguiPlugin::default(),
+        PanOrbitCameraPlugin,
+        SimulationPlugin,
+        visuals::VisualsPlugin,
+    ))
+    .add_systems(
+        EguiPrimaryContextPass,
+        (
+            ui::lab_panel::render_ui,
+            ui::robot_inspector::render_robot_inspector,
+        ),
+    )
+    .add_systems(Update, sync_time_scale)
+    .add_systems(FixedUpdate, start_evolving.before(EvolutionSystems));
+
+    // Dropping `.lsys` files into assets/morphologies/ needs a folder listing,
+    // which a browser cannot give.
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(symbios_robot_lab::core::hotload::MorphologyHotloadPlugin);
+
+    app.run();
 }
 
-/// Fires `MaterialSettingsChanged` once at startup so the observer applies the
-/// initial `MaterialSettingsMap` defaults to every freshly-created
-/// `StandardMaterial`. Subsequent triggers come from UI mutations (none yet,
-/// but wired so the lab is observer-ready).
-fn trigger_initial_material_sync(mut commands: Commands) {
-    commands.trigger(MaterialSettingsChanged);
+/// Starts the first run on the first fixed step, so the lab opens on robots
+/// already evolving rather than an empty arena. Sent from the fixed-step
+/// schedule, before the loop that reads it: a request sent at startup could
+/// expire before the first fixed step runs.
+fn start_evolving(mut started: Local<bool>, mut requests: MessageWriter<SpawnRequest>) {
+    if !*started {
+        *started = true;
+        requests.write(SpawnRequest);
+    }
 }

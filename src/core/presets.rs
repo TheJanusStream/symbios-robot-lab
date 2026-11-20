@@ -1,6 +1,3 @@
-/*
-    START OF FILE: src/core/presets.rs
-*/
 /// Initial morphology pool for Generation 0.
 ///
 /// Every entry is a credible legged walker: capsules to avoid snagging,
@@ -9,12 +6,20 @@
 /// (`Si`), and bounded recursion. Hinge limits keep joints from folding
 /// onto themselves; motor effort is sized to lift body weight.
 ///
-/// The five entries cover a deliberate range of body plans:
-///   1. Millipede   — long redundant body, many short legs (proven champion).
-///   2. Quadruped   — sphere body, four legs with stochastic leg-segment count.
-///   3. Hexapod     — sphere body, six deterministic hip+knee legs at 60°.
-///   4. Insect      — elongated rigid spine, three deterministic leg pairs.
-///   5. Crawler     — low-CoG sphere body, four short hip+knee legs.
+/// The eight entries cover a deliberate range of body plans:
+///   1. Millipede - long redundant body, many short legs (proven champion).
+///   2. Quadruped - sphere body, four legs with stochastic leg-segment count.
+///   3. Hexapod - sphere body, six deterministic hip+knee legs at 60°.
+///   4. Insect - elongated rigid spine, three deterministic leg pairs.
+///   5. Crawler - low-CoG sphere body, four short hip+knee legs.
+///   6. Tripod - three legs whose shins slide (prismatic joints).
+///   7. Strider - quadruped on flat feet with limited ball-joint ankles.
+///   8. Scout - the Crawler with an ultrasonic eye on a neck, looking at the
+///      ground ahead.
+///
+/// The last three bring in what the lab's other joints and sensors can do,
+/// so evolution meets sliders, ball joints and distance sensing from the
+/// start rather than only by mutation.
 ///
 /// Removed in this overhaul: Sidewinder (open-ended spine, unwalkable),
 /// Biped (no foot sensors, 2-leg balance too hard), Starfish (5-fold
@@ -142,6 +147,77 @@ LP -> [ Jf &(90) C(hip) ^(90) -(90) /(90) Jl(hipmin, hipmax, eff, vel) J K(leg, 
 #define la 55
 #define lb 90
 omega: !(0.45) O Si !(lw) [ &(lb) M ^(la) L ] [ \\(90) &(lb) M ^(la) L ] [ \\(180) &(lb) M ^(la) L ] [ /(90) &(lb) M ^(la) L ]
+M -> /(90) Jl(hip_min, hip_max, hip_eff, hip_vel) J C(0.3) \\(90)
+L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, kvel) J K(seg) St",
+
+    // ── 6. Tripod ──────────────────────────────────────────────────────
+    // Three legs at 120°, each a hip, a thigh and a shin that slides along
+    // the leg (Ja(0, 1, 0) turns the joint axis to the leg's growth
+    // direction before Jp makes it prismatic), so a leg can push off the
+    // ground as well as swing. 300 N per slider lifts the ~22 kg robot at
+    // about four times its weight with all three legs (the lab caps any one
+    // slider at 5000 N, 23 times the robot's weight).
+    "\
+#define hip_min -0.5
+#define hip_max 0.5
+#define eff 3000
+#define vel 5
+#define slide_min -0.15
+#define slide_max 0.15
+#define slide_eff 300
+#define lw 0.2
+#define seg 0.55
+#define la 45
+#define lb 90
+omega: !(0.5) O Si !(lw) [ &(lb) M ^(la) L ] [ \\(120) &(lb) M ^(la) L ] [ \\(240) &(lb) M ^(la) L ]
+M -> /(90) Jl(hip_min, hip_max, eff, vel) J C(0.3) \\(90)
+L -> Jl(hip_min, hip_max, eff, vel) J !(lw) K(seg) Ja(0, 1, 0) Jl(slide_min, slide_max, slide_eff, vel) Jp K(seg) St",
+
+    // ── 7. Strider ─────────────────────────────────────────────────────
+    // Quadruped with hip+knee legs standing on flat feet. Each ankle is a
+    // passive ball joint (Jb) with its own limits (Jlc drops the leg's
+    // hinge limits first): it twists at most tw_max about the shin and
+    // swings in a cone of sw_max, so the foot settles flat on the ground.
+    "\
+#define hip_min -0.6
+#define hip_max 0.6
+#define knee_min -0.8
+#define knee_max 0.8
+#define eff 3000
+#define vel 5
+#define tw_min -0.3
+#define tw_max 0.3
+#define sw_min -0.45
+#define sw_max 0.45
+#define lw 0.2
+#define seg 0.6
+#define la 45
+#define lb 90
+omega: !(0.6) O Si !(lw) [ &(lb) M ^(la) L ] [ \\(90) &(lb) M ^(la) L ] [ \\(180) &(lb) M ^(la) L ] [ /(90) &(lb) M ^(la) L ]
+M -> /(90) Jl(hip_min, hip_max, eff, vel) J C(0.4) \\(90)
+L -> Jl(hip_min, hip_max, eff, vel) J !(lw) K(seg) Jl(knee_min, knee_max, eff, vel) J K(seg) A
+A -> Jlc Jla(0, 1, 0, tw_min, tw_max, eff, vel) Jla(1, 0, 0, sw_min, sw_max, eff, vel) Jb B(0.08, 0.35, 0.35) St",
+
+    // ── 8. Scout ───────────────────────────────────────────────────────
+    // The Crawler with a welded neck reaching forward and up (-(135) from
+    // the body's growth axis, which points down once the robot is turned
+    // over) and an ultrasonic eye at its tip turned to the ground ahead
+    // (+(90)): it reads how high and how pitched the body rides.
+    "\
+#define hip_min -0.5
+#define hip_max 0.5
+#define hip_eff 3000
+#define hip_vel 5
+#define knee_min -1.0
+#define knee_max 0.2
+#define keff 3000
+#define kvel 5
+#define lw 0.2
+#define seg 0.4
+#define la 55
+#define lb 90
+#define neck 0.4
+omega: !(0.45) O Si !(lw) [ -(135) C(neck) +(90) Su ] [ &(lb) M ^(la) L ] [ \\(90) &(lb) M ^(la) L ] [ \\(180) &(lb) M ^(la) L ] [ /(90) &(lb) M ^(la) L ]
 M -> /(90) Jl(hip_min, hip_max, hip_eff, hip_vel) J C(0.3) \\(90)
 L -> Jl(hip_min, hip_max, hip_eff, hip_vel) J !(lw) K(seg) Jl(knee_min, knee_max, keff, kvel) J K(seg) St",
 ];

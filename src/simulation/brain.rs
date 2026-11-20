@@ -1,438 +1,203 @@
+//! The brain: one feed-forward network per robot, evaluated from its sensor
+//! inputs, whose outputs drive the robot's joint motors.
+
+use crate::core::config::BrainEncoding;
+use crate::core::genome::AgentGenotype;
+use crate::simulation::clock::GenerationClock;
+use crate::simulation::hyperneat::{CPPN_INPUTS, CPPN_OUTPUTS, Substrate, paint_brain};
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use symbios_neat::{CppnEvaluator, EvalScratchpad};
+use symbios_neat::{CppnEvaluator, EvaluatorError, FeedforwardNetwork, Scratchpad};
+use symbios_robot::RobotBlueprint;
 
-/// Marker linking a module (rigid body) entity to its owning agent.
-#[derive(Component)]
-pub struct AgentModule;
+/// The speed (rad/s) the metrics read a hinge output of ±1 as, when they
+/// judge the brain's commands for smoothness and intensity: the scale their
+/// thresholds were set at when outputs drove motor speeds. The motors now
+/// take outputs as positions (see [`drive_motors`]).
+pub const MAX_MOTOR_VELOCITY: f32 = 3.0;
+/// The most torque (N·m) any hinge motor may exert; a joint whose blueprint
+/// limit gives a smaller effort is held to that. Also the torque scale of
+/// the metrics' energy and work estimates.
+pub const MAX_MOTOR_TORQUE: f32 = 5000.0;
+/// The speed (m/s) the metrics read a slider output of ±1 as.
+pub const MAX_PRISMATIC_VELOCITY: f32 = 1.5;
+/// The most force (N) any slider motor may exert; a joint whose blueprint
+/// limit gives a smaller effort is held to that.
+pub const MAX_PRISMATIC_FORCE: f32 = 5000.0;
+/// Evaluate brains every Nth fixed step; motors hold their last command in
+/// between. Sensors still read every step, so the IMU's finite differences
+/// stay one step long.
+pub const BRAIN_EVAL_INTERVAL: u32 = 2;
 
-/// Joint proprioception sensor attached to a hinge joint entity.
-/// Provides 1 input per tick: the current joint angle normalized to [-1, 1].
-///
-/// `brain_entity` and `input_offset` enable cache-friendly linear iteration,
-/// matching the pattern used by `AgentImu` and `AgentTouch`.
-#[derive(Component)]
-pub struct AgentJoint {
-    /// Entity that holds this joint's `RobotBrain`.
-    pub brain_entity: Entity,
-    /// Index in `RobotBrain.sensor_inputs` for this joint's angle value.
-    pub input_offset: usize,
+/// Range given to a driven hinge that has no limit (rad either side of rest).
+pub const DEFAULT_HINGE_RANGE: f32 = std::f32::consts::FRAC_PI_4;
+/// Range given to a driven slider that has no limit (m either side of rest).
+pub const DEFAULT_SLIDER_RANGE: f32 = 0.1;
+
+/// A joint the brain drives, and the range its output maps onto.
+#[derive(Debug, Clone, Copy)]
+pub struct DrivenJoint {
+    pub entity: Entity,
+    /// Lower end of the joint's travel (rad for a hinge, m for a slider).
+    pub min: f32,
+    /// Upper end of the joint's travel.
+    pub max: f32,
+    /// The most its motor may exert (N·m for a hinge, N for a slider).
+    pub max_effort: f32,
 }
 
-/// Tag for a prismatic (slider) joint driven by the brain. No proprioception
-/// input wired yet — the brain only writes its `target_velocity`. The output
-/// index is the joint's position in `RobotBrain.prismatic_entities`.
-#[derive(Component)]
-pub struct AgentPrismaticJoint;
-
-/// Ultrasonic distance sensor mounted on a module. On each tick we raycast
-/// forward (along the module's local +X) up to `ULTRASONIC_MAX_RANGE` and
-/// write `1.0 - hit_distance / max_range` (so closer = larger reading).
-///
-/// `brain_entity` and `input_offset` enable cache-friendly linear iteration.
-#[derive(Component)]
-pub struct AgentUltrasonic {
-    /// Entity that holds this sensor's `RobotBrain`.
-    pub brain_entity: Entity,
-    /// Index in `RobotBrain.sensor_inputs` for this sensor's reading.
-    pub input_offset: usize,
+impl DrivenJoint {
+    /// The joint position an output in `[-1, 1]` asks for: -1 is the bottom of
+    /// the range, +1 the top.
+    pub fn target(&self, output: f32) -> f32 {
+        let t = (output.clamp(-1.0, 1.0) + 1.0) / 2.0;
+        self.min + t * (self.max - self.min)
+    }
 }
 
-/// Visual marker for a `RobotBlueprint::end_effectors` entry. Pure cosmetic;
-/// not yet used by scoring or the brain. Kept so future scoring can find them.
-#[derive(Component)]
-pub struct AgentEndEffector;
+/// Why a genotype yielded no brain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrainError {
+    /// The controller genome (a direct brain or a CPPN) has a cycle.
+    Cyclic,
+    /// A HyperNEAT controller is not shaped like the lab's CPPN.
+    CppnShape { inputs: usize, outputs: usize },
+}
 
-/// Maximum range of the ultrasonic sensor (metres). Hits beyond this clamp to 0.
-pub const ULTRASONIC_MAX_RANGE: f32 = 8.0;
+impl std::fmt::Display for BrainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BrainError::Cyclic => f.write_str("the brain's genome has a cycle"),
+            BrainError::CppnShape { inputs, outputs } => write!(
+                f,
+                "a HyperNEAT CPPN needs {CPPN_INPUTS} inputs and {CPPN_OUTPUTS} outputs, \
+                 this one has {inputs} and {outputs}"
+            ),
+        }
+    }
+}
 
-/// Holds the compiled NEAT network for a single agent, along with direct
-/// entity references to its sensors and joints for O(1) access.
-///
-/// Beyond the controller and sensor wiring, the brain owns the per-fixed-step
-/// metric accumulators consumed by [`crate::simulation::scoring`]. These cover
-/// energy / mechanical work, action smoothness, body jerk, orientation
-/// variance, periodic forward-progress sampling for R², and support-duty
-/// counting. All accumulators are filled by `track_metrics` and reset per
-/// generation when the agent respawns.
+impl std::error::Error for BrainError {}
+
+impl From<EvaluatorError> for BrainError {
+    fn from(_: EvaluatorError) -> Self {
+        BrainError::Cyclic
+    }
+}
+
+/// The network that drives `blueprint`'s body: the controller itself for a
+/// direct encoding, the network its CPPN paints onto the body for HyperNEAT.
+pub fn compile_brain(
+    genotype: &AgentGenotype,
+    blueprint: &RobotBlueprint,
+) -> Result<FeedforwardNetwork, BrainError> {
+    let mut genome = genotype.controller.clone();
+    genome.break_cycles();
+    let compiled = CppnEvaluator::new(&genome)?;
+    match genotype.encoding {
+        BrainEncoding::Direct => Ok(compiled.network().clone()),
+        BrainEncoding::HyperNeat => {
+            let (inputs, outputs) = (compiled.num_inputs(), compiled.num_outputs());
+            if (inputs, outputs) != (CPPN_INPUTS, CPPN_OUTPUTS) {
+                return Err(BrainError::CppnShape { inputs, outputs });
+            }
+            Ok(paint_brain(&compiled, &Substrate::of_blueprint(blueprint)))
+        }
+    }
+}
+
+/// A robot's controller and the joints it drives. Lives on the body part.
 #[derive(Component)]
 pub struct RobotBrain {
-    pub evaluator: CppnEvaluator,
-    /// Reusable scratchpad for allocation-free NEAT evaluation.
-    pub scratchpad: EvalScratchpad,
+    pub network: FeedforwardNetwork,
+    pub scratchpad: Scratchpad,
     pub agent_index: usize,
-    /// Pre-allocated input buffer filled by `gather_sensor_inputs`.
-    /// Layout: [sin(t), cos(t), imu0..., touch0..., ultrasonic0..., joint0_angle, ...].
+    /// Inputs, filled every fixed step by `gather_sensor_inputs` in the
+    /// layout of [`crate::simulation::sensors::InputLayout`].
     pub sensor_inputs: Vec<f32>,
-    /// Hinge joint entities, ordered by joint_index (matches the FIRST N
-    /// motor outputs of the NEAT network).
-    pub joint_entities: Vec<Entity>,
-    /// Prismatic (slider) joint entities, ordered by index. Outputs are
-    /// laid out AFTER all hinge outputs, so `output[hinge_count + i]`
-    /// drives `prismatic_entities[i]`.
-    pub prismatic_entities: Vec<Entity>,
-    /// Module entities excluding the brain/body entity, for explosion checks.
-    pub module_entities: Vec<Entity>,
-    /// Total mass of all modules (computed once at spawn from the blueprint).
-    /// Denominator of the Cost-of-Transport metric (`E / (m·g·d)`).
-    pub total_mass: f32,
-    /// Total touch sensors on this agent (denominator for support duty factor).
-    pub touch_sensor_count: u16,
-
-    // ── Energy / mechanical work ───────────────────────────────────────────
-    /// Coarse motor energy proxy: sum of `|τ_max · v_target| · dt` per joint.
-    /// Kept as the lab's historical "energy" channel; not the CoT numerator.
-    pub energy_consumed: f32,
-    /// Better mechanical-work approximation: sum of `|τ_max · Δθ|` from actual
-    /// joint-angle finite differences. Used for Cost-of-Transport.
-    pub mechanical_work: f32,
-
-    // ── Posture (mean + variance via Welford-style accumulators) ───────────
-    /// Sum of `dot(local_up, world_up)` per tick (mean = sum/ticks).
-    pub up_alignment_sum: f32,
-    /// Sum of `up_alignment²` per tick — pairs with `up_alignment_sum` to
-    /// derive the population-variance estimator `E[X²] - E[X]²`.
-    pub up_alignment_sq_sum: f32,
-    /// Sum of body Y per tick (mean height = sum/ticks).
-    pub height_sum: f32,
-
-    // ── Smoothness (per-joint Δv, ΔΔv, body Δv) ────────────────────────────
-    /// Per-driven-joint commanded velocity at the previous tracked tick.
-    /// Length = `joint_entities.len() + prismatic_entities.len()`.
-    /// First N entries are revolute (rad/s), then prismatic (m/s).
-    pub prev_target_velocities: Vec<f32>,
-    /// Per-driven-joint commanded velocity TWO tracked ticks ago. Used with
-    /// `prev_target_velocities` for the second-derivative anti-vibration term:
-    /// `Σ |a_t − 2·a_{t−1} + a_{t−2}|²`. Same length as `prev_target_velocities`.
-    pub prev_prev_target_velocities: Vec<f32>,
-    /// Per-revolute-joint angle at the previous tracked tick, used both for
-    /// mechanical-work estimation and to detect tracked-tick boundaries.
-    /// Length = `joint_entities.len()`.
-    pub prev_joint_angles: Vec<f32>,
-    /// Sum of squared per-tick Δ(target_velocity) across all joints.
-    /// Larger = more chattery control. `SmoothnessReward = 1 / (1 + mean)`.
-    pub action_smoothness_sum: f32,
-    /// Sum of squared per-tick Δ²(target_velocity) across all joints.
-    /// Catches sign-flipping vibration that a first-derivative penalty can
-    /// miss (a ±ε oscillation has small |Δv|=2ε but |ΔΔv|=4ε per tick).
-    /// `ControlJerkReward = 1 / (1 + mean / scale)`.
-    pub control_jerk_sum: f32,
-    /// Body LinearVelocity at the previous tracked tick.
-    pub prev_body_lin_vel: Vec3,
-    /// Sum of squared per-tick Δ(body_velocity). Approximates body jerk.
-    pub body_jerk_sum: f32,
-
-    // ── Body-Y oscillation (CoM bounce signature) ──────────────────────────
-    /// Sum of `body_y²` per tick. Pairs with `height_sum` to derive
-    /// `stddev(body_y)` via the population-variance estimator. Walking has
-    /// characteristic vertical bounce; vibrobots are flat.
-    pub height_sq_sum: f32,
-
-    // ── Support / step-cycle counters ──────────────────────────────────────
-    /// Sum of (touch sensors in contact) across all tracked ticks. Mean
-    /// support duty per tick = `touch_contact_ticks / (touch_sensor_count·ticks)`.
-    pub touch_contact_ticks: u32,
-    /// Total number of contact↔air transitions across all touch sensors,
-    /// summed over the eval window. Real walking cycles feet through air;
-    /// vibrobots have ~0 transitions.
-    pub foot_transition_count: u32,
-
-    // ── Robustness (perturbation injection) ────────────────────────────────
-    /// Once-per-agent flag flipped by `apply_perturbations` after the impulse
-    /// has been applied, so we don't re-perturb on every tick.
-    pub perturbed: bool,
-
-    // ── Bookkeeping ────────────────────────────────────────────────────────
-    /// Number of ticks metrics have been tracked (denominator for means).
-    pub metric_ticks: u32,
+    /// The network's last outputs: hinge commands first, then prismatic.
+    pub outputs: Vec<f32>,
+    /// Hinge joints, matching the first outputs in order.
+    pub hinge_joints: Vec<DrivenJoint>,
+    /// Prismatic joints, matching the outputs after the hinges.
+    pub prismatic_joints: Vec<DrivenJoint>,
+    /// The robot's parts other than the body, for the explosion check.
+    pub parts: Vec<Entity>,
 }
 
-/// IMU sensor attached to a module rigid body.
-///
-/// Provides 6 inputs per tick:
-///   - Linear acceleration  (x, y, z) — world-space, derived from velocity delta
-///   - Angular acceleration (x, y, z) — world-space, derived from velocity delta
-///
-/// Previous-frame velocities are stored to compute finite-difference acceleration.
-/// `brain_entity` and `input_offset` enable cache-friendly linear iteration in
-/// `gather_sensor_inputs` — sensors write directly to their brain's input buffer
-/// without the brain needing to look them up.
-#[derive(Component)]
-pub struct AgentImu {
-    pub prev_linear_vel: Vec3,
-    pub prev_angular_vel: Vec3,
-    /// Entity that holds this sensor's `RobotBrain`.
-    pub brain_entity: Entity,
-    /// Start index in `RobotBrain.sensor_inputs` for this IMU's 6 values.
-    pub input_offset: usize,
-}
-
-/// Touch sensor attached to a module rigid body.
-/// Touch contributes 1 input: 1.0 if in contact, 0.0 otherwise.
-///
-/// `brain_entity` and `input_offset` enable cache-friendly linear iteration.
-/// `prev_in_contact` lets `track_metrics` count contact↔air transitions per
-/// foot — the signature of a real step cycle vs. a vibrating slide.
-#[derive(Component)]
-pub struct AgentTouch {
-    /// Entity that holds this sensor's `RobotBrain`.
-    pub brain_entity: Entity,
-    /// Index in `RobotBrain.sensor_inputs` for this touch's value.
-    pub input_offset: usize,
-    /// Contact state at the previous tracked tick. Initialised `false` at
-    /// spawn; the first tracked tick may register a spurious transition,
-    /// which is acceptable noise vs. the per-window total.
-    pub prev_in_contact: bool,
-}
-
-/// Number of clock inputs (sin(t), cos(t)).
-pub const NUM_CLOCK_INPUTS: usize = 2;
-/// Each IMU contributes 6 values (linear accel xyz, angular accel xyz).
-pub const INPUTS_PER_IMU: usize = 6;
-/// Each touch sensor contributes 1 value (contact boolean).
-pub const INPUTS_PER_TOUCH: usize = 1;
-/// Each ultrasonic sensor contributes 1 value (proximity in [0, 1]).
-pub const INPUTS_PER_ULTRASONIC: usize = 1;
-/// Each hinge joint contributes 1 value (current angle / π, normalized to [-1, 1]).
-pub const INPUTS_PER_JOINT: usize = 1;
-
-/// Computes the total number of NEAT inputs for a given sensor topology.
-///
-/// Layout:
-///   0..2:                sin(t), cos(t)  — oscillation clocks
-///   2..2+6N_imu:         linear accel (x,y,z) + angular accel (x,y,z) per IMU
-///   ..+N_touch:          contact flag per touch sensor
-///   ..+N_ultra:          proximity reading per ultrasonic sensor
-///   ..+N_hinge:          current angle per hinge joint (normalized to [-1, 1])
-///
-/// Outputs (one per hinge then one per prismatic joint):
-///   Each output is tanh-activated → [-1, 1], mapped to target_velocity.
-pub fn compute_num_inputs(
-    num_imus: usize,
-    num_touches: usize,
-    num_ultrasonics: usize,
-    num_hinges: usize,
-) -> usize {
-    NUM_CLOCK_INPUTS
-        + num_imus * INPUTS_PER_IMU
-        + num_touches * INPUTS_PER_TOUCH
-        + num_ultrasonics * INPUTS_PER_ULTRASONIC
-        + num_hinges * INPUTS_PER_JOINT
-}
-
-/// Maximum motor speed (rad/s) that an output of ±1 maps to.
-const MAX_MOTOR_VELOCITY: f32 = 3.0;
-
-/// Maximum torque (N·m) each motor can apply.
-pub const MAX_MOTOR_TORQUE: f32 = 5000.0;
-
-/// Evaluate brains every Nth fixed step. Motors hold their last commanded
-/// velocity between evaluations. This halves NEAT CPU cost while
-/// `gather_sensor_inputs` still runs every step to keep IMU data fresh.
-const BRAIN_EVAL_INTERVAL: u32 = 2;
-
-/// Persistent buffers for `drive_motors`, reused across frames to avoid
-/// per-frame heap allocation.
-#[derive(Default)]
-pub struct DriveMotorsBuffers {
-    /// Reusable output buffer written by `evaluate_into`.
-    outputs: Vec<f32>,
-    /// Collected motor commands: (joint_entity, output_value).
-    motor_commands: Vec<(Entity, f32)>,
-}
-
-/// Gathers sensor data from all IMU, touch, and ultrasonic sensors into their
-/// owning brain's `sensor_inputs` buffer. Iterates sensor archetypes linearly
-/// (cache-friendly) rather than doing per-brain random entity lookups.
-///
-/// Runs in `FixedUpdate` before `drive_motors`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a Bevy system: each parameter is a query or resource it reads"
-)]
-pub fn gather_sensor_inputs(
-    mut brains: Query<&mut RobotBrain>,
-    mut imus: Query<(&mut AgentImu, &LinearVelocity, &AngularVelocity)>,
-    touches: Query<(&AgentTouch, Option<&CollidingEntities>)>,
-    ultrasonics: Query<(&AgentUltrasonic, &GlobalTransform)>,
-    agent_joints: Query<(&AgentJoint, &RevoluteJoint)>,
-    rotations: Query<&Rotation>,
-    spatial_query: SpatialQuery,
-    time: Res<Time>,
-) {
-    let t = time.elapsed_secs();
-    let dt = time.delta_secs();
-    let inv_dt = if dt > 0.0 { 1.0 / dt } else { 0.0 };
-
-    // Phase 1: Initialize all brain input buffers with clock signals.
-    for mut brain in &mut brains {
-        brain.sensor_inputs.fill(0.0);
-        if brain.sensor_inputs.len() >= NUM_CLOCK_INPUTS {
-            brain.sensor_inputs[0] = t.sin();
-            brain.sensor_inputs[1] = t.cos();
-        }
+impl RobotBrain {
+    /// Joints the brain drives (hinges, then sliders).
+    pub fn driven_joint_count(&self) -> usize {
+        self.hinge_joints.len() + self.prismatic_joints.len()
     }
 
-    // Phase 2: Linear pass over all IMU sensors — contiguous archetype iteration.
-    for (mut imu, lin_vel, ang_vel) in &mut imus {
-        let lin_accel = (lin_vel.0 - imu.prev_linear_vel) * inv_dt;
-        let ang_accel = (ang_vel.0 - imu.prev_angular_vel) * inv_dt;
-        imu.prev_linear_vel = lin_vel.0;
-        imu.prev_angular_vel = ang_vel.0;
-
-        if let Ok(mut brain) = brains.get_mut(imu.brain_entity) {
-            let o = imu.input_offset;
-            if o + 5 < brain.sensor_inputs.len() {
-                brain.sensor_inputs[o] = lin_accel.x;
-                brain.sensor_inputs[o + 1] = lin_accel.y;
-                brain.sensor_inputs[o + 2] = lin_accel.z;
-                brain.sensor_inputs[o + 3] = ang_accel.x;
-                brain.sensor_inputs[o + 4] = ang_accel.y;
-                brain.sensor_inputs[o + 5] = ang_accel.z;
-            }
-        }
-    }
-
-    // Phase 3: Linear pass over all touch sensors.
-    for (touch, colliding) in &touches {
-        let contact = match colliding {
-            Some(c) if !c.is_empty() => 1.0,
-            _ => 0.0,
-        };
-        if let Ok(mut brain) = brains.get_mut(touch.brain_entity)
-            && touch.input_offset < brain.sensor_inputs.len()
-        {
-            brain.sensor_inputs[touch.input_offset] = contact;
-        }
-    }
-
-    // Phase 3b: Ultrasonic raycasts. Cast forward (sensor's world +X) up to
-    // ULTRASONIC_MAX_RANGE; write 1.0 - hit/max so closer = larger reading.
-    // Excluding self-body avoids the sensor reading its own mount.
-    for (sensor, transform) in &ultrasonics {
-        let origin = transform.translation();
-        let direction = transform.rotation() * Vec3::X;
-        let dir = match Dir3::new(direction) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        let filter = SpatialQueryFilter::default();
-        let proximity =
-            match spatial_query.cast_ray(origin, dir, ULTRASONIC_MAX_RANGE, true, &filter) {
-                Some(hit) => (1.0 - (hit.distance / ULTRASONIC_MAX_RANGE)).clamp(0.0, 1.0),
-                None => 0.0,
-            };
-        if let Ok(mut brain) = brains.get_mut(sensor.brain_entity)
-            && sensor.input_offset < brain.sensor_inputs.len()
-        {
-            brain.sensor_inputs[sensor.input_offset] = proximity;
-        }
-    }
-
-    // Phase 4: Linear pass over all hinge joint angle sensors.
-    // Computes the signed angle around the hinge axis from the two body
-    // rotations and their local joint frames, normalized to [-1, 1].
-    for (agent_joint, joint) in &agent_joints {
-        let (Ok(rot1), Ok(rot2)) = (rotations.get(joint.body1), rotations.get(joint.body2)) else {
-            continue;
-        };
-        let basis1 = joint.local_basis1().unwrap_or(Quat::IDENTITY);
-        let basis2 = joint.local_basis2().unwrap_or(Quat::IDENTITY);
-        let axis = joint.hinge_axis;
-
-        // Perpendicular reference vector to the hinge axis.
-        let perp = if axis.x.abs() < 0.9 {
-            axis.cross(Vec3::X).normalize()
-        } else {
-            axis.cross(Vec3::Y).normalize()
-        };
-
-        let a1 = (rot1.0 * basis1) * axis;
-        let b1 = (rot1.0 * basis1) * perp;
-        let b2 = (rot2.0 * basis2) * perp;
-
-        let sin_angle = b1.cross(b2).dot(a1);
-        let cos_angle = b1.dot(b2);
-        let angle = sin_angle.atan2(cos_angle);
-
-        if let Ok(mut brain) = brains.get_mut(agent_joint.brain_entity)
-            && agent_joint.input_offset < brain.sensor_inputs.len()
-        {
-            brain.sensor_inputs[agent_joint.input_offset] = angle * std::f32::consts::FRAC_1_PI;
-        }
+    /// The brain's last outputs (hinges, then sliders) on the metrics' speed
+    /// scale ([`MAX_MOTOR_VELOCITY`], [`MAX_PRISMATIC_VELOCITY`]): what the
+    /// metrics judge for smoothness and intensity, however the motors carry
+    /// them out.
+    pub fn commands(&self) -> impl Iterator<Item = f32> + '_ {
+        let hinges = self.hinge_joints.len();
+        self.outputs
+            .iter()
+            .take(self.driven_joint_count())
+            .enumerate()
+            .map(move |(i, &output)| {
+                if i < hinges {
+                    output * MAX_MOTOR_VELOCITY
+                } else {
+                    output * MAX_PRISMATIC_VELOCITY
+                }
+            })
     }
 }
 
-/// Maximum prismatic motor velocity (m/s) at output ±1.
-const MAX_PRISMATIC_VELOCITY: f32 = 1.5;
-/// Maximum prismatic motor force (N).
-const MAX_PRISMATIC_FORCE: f32 = 5000.0;
-
-/// Evaluates each agent's NEAT brain using pre-gathered sensor inputs
-/// and drives its joint motors (revolute first, then prismatic).
+/// Evaluates every brain from its gathered inputs and sets its joints'
+/// motor targets. Runs after `gather_sensor_inputs`, every
+/// [`BRAIN_EVAL_INTERVAL`] steps of the generation clock.
 ///
-/// Reads from `RobotBrain.sensor_inputs` (filled by `gather_sensor_inputs`)
-/// and writes motor commands to `RevoluteJoint` and `PrismaticJoint`
-/// components.
-///
-/// Runs in `FixedUpdate` after `gather_sensor_inputs`, but only evaluates
-/// every `BRAIN_EVAL_INTERVAL` steps. Motors hold their last commanded
-/// velocity between evaluations. This halves the NEAT CPU cost — the
-/// most expensive per-frame work — without noticeably degrading locomotion.
+/// Position control: each output picks a target within its joint's range
+/// and avian's motor (a critically damped 5 Hz spring by default) servoes
+/// the joint there. The motor's velocity target stays 0. Driving the
+/// velocity target instead, as the lab once did, leaves that spring pulling
+/// every joint back to rest, so a full-speed command held a hinge only about
+/// 0.19 rad from it.
 pub fn drive_motors(
     mut brains: Query<&mut RobotBrain>,
-    mut joints: Query<&mut RevoluteJoint>,
-    mut prismatics: Query<&mut PrismaticJoint>,
-    mut bufs: Local<DriveMotorsBuffers>,
-    mut step: Local<u32>,
+    mut hinges: Query<&mut RevoluteJoint>,
+    mut sliders: Query<&mut PrismaticJoint>,
+    clock: Res<GenerationClock>,
 ) {
-    *step = step.wrapping_add(1);
-    if !step.is_multiple_of(BRAIN_EVAL_INTERVAL) {
+    if !clock.step().is_multiple_of(BRAIN_EVAL_INTERVAL) {
         return;
     }
-
-    bufs.motor_commands.clear();
-    let mut prismatic_commands: Vec<(Entity, f32)> = Vec::new();
-
-    for brain in &mut brains {
-        let DriveMotorsBuffers {
+    for mut brain in &mut brains {
+        let RobotBrain {
+            network,
+            scratchpad,
+            sensor_inputs,
             outputs,
-            motor_commands,
-        } = &mut *bufs;
+            hinge_joints,
+            prismatic_joints,
+            ..
+        } = &mut *brain;
+        outputs.resize(network.num_outputs(), 0.0);
+        network.evaluate_into(sensor_inputs, outputs, scratchpad);
 
-        let num_out = brain.evaluator.num_outputs();
-        outputs.resize(num_out, 0.0);
-        let brain = brain.into_inner();
-        brain
-            .evaluator
-            .evaluate_into(&brain.sensor_inputs, outputs, &mut brain.scratchpad);
-
-        // First N_hinge outputs drive revolute joints.
-        for (ji, &joint_entity) in brain.joint_entities.iter().enumerate() {
-            if let Some(&output) = outputs.get(ji) {
-                motor_commands.push((joint_entity, output));
+        for (driven, &output) in hinge_joints.iter().zip(outputs.iter()) {
+            if let Ok(mut joint) = hinges.get_mut(driven.entity) {
+                joint.motor.target_position = driven.target(output);
+                joint.motor.target_velocity = 0.0;
+                joint.motor.max_torque = driven.max_effort;
             }
         }
-        // Next N_prismatic outputs drive prismatic joints.
-        let prismatic_offset = brain.joint_entities.len();
-        for (pi, &joint_entity) in brain.prismatic_entities.iter().enumerate() {
-            if let Some(&output) = outputs.get(prismatic_offset + pi) {
-                prismatic_commands.push((joint_entity, output));
+        let slider_outputs = outputs.iter().skip(hinge_joints.len());
+        for (driven, &output) in prismatic_joints.iter().zip(slider_outputs) {
+            if let Ok(mut joint) = sliders.get_mut(driven.entity) {
+                joint.motor.target_position = driven.target(output);
+                joint.motor.target_velocity = 0.0;
+                joint.motor.max_force = driven.max_effort;
+                joint.motor.enabled = true;
             }
-        }
-    }
-
-    for &(joint_entity, output) in &bufs.motor_commands {
-        if let Ok(mut joint) = joints.get_mut(joint_entity) {
-            joint.motor.target_velocity = output * MAX_MOTOR_VELOCITY;
-            joint.motor.max_torque = MAX_MOTOR_TORQUE;
-        }
-    }
-    for &(joint_entity, output) in &prismatic_commands {
-        if let Ok(mut joint) = prismatics.get_mut(joint_entity) {
-            joint.motor.target_velocity = output * MAX_PRISMATIC_VELOCITY;
-            joint.motor.max_force = MAX_PRISMATIC_FORCE;
-            joint.motor.enabled = true;
         }
     }
 }

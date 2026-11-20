@@ -2,6 +2,8 @@
 
 pub mod config;
 pub mod genome;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod hotload;
+pub mod morphology_pool;
 pub mod population;
 pub mod presets;

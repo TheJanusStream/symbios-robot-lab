@@ -4,16 +4,60 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.20"
-# 0.43.1 is the floor: 0.43.0 broke egui's shader on wasm.
-bevy_egui = "0.43.1"
+# Only the parts of Bevy the lab uses (no audio, glTF, UI, text, gizmos,
+# picking, image formats or tonemapping LUTs): every feature left on is code
+# in the browser bundle. The camera tonemaps without a LUT (visuals::scene).
+bevy = { version = "0.20", default-features = false, features = [
+    # The app frame.
+    "async_executor",
+    "bevy_asset",
+    "bevy_log",
+    "std",
+    "multi_threaded",
+    # Windowing and input, native and web.
+    "bevy_winit",
+    "bevy_window",
+    "webgl2",
+    "x11",
+    "wayland",
+    "keyboard",
+    "mouse",
+    # Rendering, plus bevy_post_process for the camera's bloom.
+    "bevy_render",
+    "bevy_extract",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_light",
+    "bevy_camera",
+    "bevy_mesh",
+    "bevy_mikktspace",
+    "bevy_image",
+    "bevy_shader",
+    "bevy_material",
+    "bevy_color",
+    "bevy_post_process",
+] }
+# 0.43.1 is the floor: 0.43.0 broke egui's shader on wasm. No default
+# features: they add Bevy UI, the clipboard, URL opening and picking.
+bevy_egui = { version = "0.43.1", default-features = false, features = [
+    "default_fonts",
+    "render",
+] }
 bevy_panorbit_camera = { version = "0.36", features = ["bevy_egui"] }
-avian3d = "0.8"
+# Only what the lab uses: 3D, parry colliders built from primitives, the XPBD
+# joint solver, and the parallel solver. Avian's defaults add mesh colliders,
+# whose cache needs Bevy's asset plugin (the headless runner has none), plus
+# its debug renderer, scene and picking support.
+avian3d = { version = "0.8", default-features = false, features = [
+    "3d",
+    "parry-f32",
+    "xpbd_joints",
+    "parallel",
+] }
 symbios = "1.5"
 symbios-robot = "0.5"
-symbios-neat = "0.2"
+symbios-neat = "0.2.3"
 symbios-genetics = "0.2"
-bevy_symbios = { version = "0.12", features = ["egui", "robot", "asset-loader"] }
 # rand and rand_pcg stay on 0.9 while symbios, symbios-neat and
 # symbios-genetics take rand 0.9 RNGs: a 0.10 RNG would not satisfy them.
 rand = "0.9"
@@ -25,27 +69,54 @@ rand_pcg = "0.9"
 serde_json = "1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-bevy = { version = "0.20", features = ["file_watcher"] }
+# `default-features = false` here too: Cargo unions every declaration of a
+# dependency, and one that leaves the defaults on turns them all back on.
+bevy = { version = "0.20", default-features = false, features = ["file_watcher"] }
+# The `.lsys` hot-loader (core::hotload). Native only: a browser cannot list
+# the morphologies folder, so the web build leaves this crate out entirely.
+bevy_symbios = { version = "0.12", default-features = false, features = ["asset-loader"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# rand 0.9 (through symbios and bevy_symbios_texture) asks getrandom 0.3 for
-# OS entropy, and on wasm32-unknown-unknown getrandom 0.3 compiles only with
-# its `wasm_js` feature on; nothing else in the graph turns it on. This
-# replaces getrandom 0.2's `js`, which no dependency used any more.
+# rand 0.9 (through symbios and symbios-neat, and the lab's own entropy seed)
+# asks getrandom 0.3 for OS entropy, and on wasm32-unknown-unknown getrandom
+# 0.3 compiles only with its `wasm_js` feature on; nothing else in the graph
+# turns it on.
 getrandom = { version = "0.3", features = ["wasm_js"] }
+# What ui::download uses to hand a file to the browser.
 web-sys = { version = "0.3.82", features = [
-    "Document",
-    "Window",
-    "HtmlElement",
-    "HtmlAnchorElement",
     "Blob",
-    "Url",
     "BlobPropertyBag",
-    "Clipboard",
-    "ClipboardEvent",
-    "Navigator",
+    "Document",
+    "Element",
+    "HtmlAnchorElement",
+    "HtmlElement",
+    "Node",
+    "Url",
+    "Window",
 ] }
 # Pinned exactly: the deploy's wasm-bindgen-cli must be this same version, and
 # with no committed lockfile an open requirement drifts past the CLI.
 wasm-bindgen = "=0.2.128"
 js-sys = "0.3.82"
+
+# Bevy and avian run unusably slowly unoptimized (a debug build simulated at
+# about a fifth of real time). The lab's own code builds at opt-level 1 for
+# quick iteration and every dependency at 3. `cargo test` inherits this, which
+# is what lets the headless tests run whole generations in seconds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The browser bundle's profile (deploy.yml builds with it): size over speed,
+# symbols stripped (the name section was half of a 163 MB release bundle).
+# Thin LTO, not fat: fat LTO merges the whole program into one LLVM module,
+# which outgrew the GitHub runner's memory for Overlands on the same engine.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

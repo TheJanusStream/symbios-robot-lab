@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Formatting needs no system libraries, so it runs as its own fast job.
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # Reads the pinned version from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          cache: false
+      - run: cargo fmt --check
+
+  # Lints and tests on Linux. The tests include whole generations run headless
+  # (tests/headless_evolution.rs), so this job also exercises the physics.
+  native:
+    name: Clippy and tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          cache: false
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test
+
+  # The browser build: code behind cfg(target_arch = "wasm32") is invisible to
+  # the native job, so it gets its own clippy pass with warnings as errors.
+  wasm:
+    name: Browser build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          target: wasm32-unknown-unknown
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+      - name: Clippy (wasm32)
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
