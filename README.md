@@ -45,7 +45,7 @@ wasm-bindgen --out-dir ./dist --target web \
 cp index.html ./dist/
 ```
 
-Serve `./dist/` with any static file server. The deploy also runs `wasm-opt -Oz`.
+Serve `./dist/` with any static file server. The deploy ships the module as built: `wasm-opt` shrinks it but makes the compressed download bigger (see `deploy.yml`).
 
 ### Checks
 

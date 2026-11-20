@@ -33,12 +33,6 @@ jobs:
       - name: Install wasm-bindgen-cli
         run: cargo install wasm-bindgen-cli --version 0.2.128
 
-      - name: Install Binaryen (wasm-opt)
-        run: |
-          wget https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz
-          tar -xzf binaryen-version_119-x86_64-linux.tar.gz
-          echo "$(pwd)/binaryen-version_119/bin" >> $GITHUB_PATH
-
       # The size-tuned profile (Cargo.toml) and the app's binary only.
       - name: Build WASM
         run: cargo build --profile wasm-release --target wasm32-unknown-unknown --bin symbios-robot-lab
@@ -50,8 +44,20 @@ jobs:
             --no-typescript \
             target/wasm32-unknown-unknown/wasm-release/symbios-robot-lab.wasm
 
-      - name: Optimize WASM
-        run: wasm-opt -Oz -o ./dist/symbios-robot-lab_bg.wasm ./dist/symbios-robot-lab_bg.wasm
+      # No wasm-opt step. Rust 1.98 emits bulk-memory, saturating float-to-int
+      # and other post-MVP instructions, which Binaryen refuses unless told
+      # each feature; told them, every level makes the download bigger,
+      # because the restructured code compresses worse (measured 2026-11-20,
+      # Binaryen 116, against the module above):
+      #
+      #              raw       gzip -9   brotli -11
+      #   as built   35.06 MB  8.46 MB   5.35 MB
+      #   -Oz        27.89 MB  8.99 MB   5.72 MB
+      #   -Os        31.70 MB  9.10 MB   5.73 MB
+      #   -O2        32.12 MB  9.19 MB   5.76 MB
+      #
+      # Pages serves the module compressed, so it ships as built. Overlands
+      # dropped its wasm-opt step for the same measured reason.
 
       - name: Assemble Site
         run: |
