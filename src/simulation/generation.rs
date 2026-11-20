@@ -593,6 +593,10 @@ pub fn activate_timer(
 
 /// End-of-generation: evaluate agents, select parents via the configured
 /// algorithm, crossover + mutate to create offspring.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Bevy system: each parameter is a query or resource it reads"
+)]
 pub fn tick_generation(
     mut commands: Commands,
     time: Res<Time>,

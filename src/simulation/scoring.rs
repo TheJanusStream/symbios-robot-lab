@@ -397,6 +397,10 @@ pub fn check_explosion(
 /// touch contact counts, foot-transition counts, action smoothness,
 /// control-jerk, mechanical work, body jerk, posture, and CoM bounce in one
 /// `FixedUpdate` step.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Bevy system: each parameter is a query or resource it reads"
+)]
 pub fn track_metrics(
     mut brains: Query<(Entity, &mut RobotBrain, &GlobalTransform, &LinearVelocity)>,
     rotations: Query<&Rotation>,

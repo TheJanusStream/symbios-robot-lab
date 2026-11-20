@@ -26,12 +26,54 @@ pub fn sync_time_scale(config: Res<LabConfig>, mut time: ResMut<Time<Virtual>>) 
     if config.is_changed() {
         time.set_relative_speed(config.time_scale);
 
-        // max_delta caps the RAW (pre-scaling) delta accepted per frame.
-        // virtual_delta = min(real_delta, max_delta) * speed
-        // fixed_steps = virtual_delta / fixed_timestep
-        // To cap fixed_steps at N: max_delta = N / FIXED_HZ / speed
-        let speed = (config.time_scale as f64).max(0.01);
-        let max_delta_secs = (MAX_FIXED_STEPS_PER_FRAME / FIXED_HZ / speed).clamp(0.002, 0.25);
-        time.set_max_delta(Duration::from_secs_f64(max_delta_secs));
+        // Since Bevy 0.20, max_delta caps the SCALED delta accepted per frame:
+        //   virtual_delta = min(real_delta * speed, max_delta)
+        //   fixed_steps   = virtual_delta * FIXED_HZ
+        // so capping fixed_steps at N is max_delta = N / FIXED_HZ, whatever
+        // the speed. Bevy 0.18 clamped the raw delta before scaling, and the
+        // cap was divided by the speed; under 0.20 that division held a 5x
+        // run at about 1x.
+        time.set_max_delta(Duration::from_secs_f64(
+            MAX_FIXED_STEPS_PER_FRAME / FIXED_HZ,
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::time::TimeUpdateStrategy;
+
+    /// Runs one frame of `raw` real time through `sync_time_scale` at the
+    /// lab's default config and returns the virtual time that frame produced.
+    fn virtual_delta_of_one_frame(raw: Duration) -> Duration {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<LabConfig>()
+            .insert_resource(TimeUpdateStrategy::ManualDuration(raw))
+            .add_systems(Update, sync_time_scale);
+        // The first update starts the clock (no delta) and applies the config;
+        // the second advances real time by `raw` at the configured speed.
+        app.update();
+        app.update();
+        app.world().resource::<Time<Virtual>>().delta()
+    }
+
+    #[test]
+    fn a_normal_frame_runs_at_the_configured_time_scale() {
+        let raw = Duration::from_millis(16);
+        let speed = f64::from(LabConfig::default().time_scale);
+        assert!(
+            speed > 1.0,
+            "the default time scale should speed the lab up"
+        );
+        assert_eq!(virtual_delta_of_one_frame(raw), raw.mul_f64(speed));
+    }
+
+    #[test]
+    fn a_slow_frame_runs_at_most_the_capped_number_of_fixed_steps() {
+        let virtual_delta = virtual_delta_of_one_frame(Duration::from_millis(500));
+        let fixed_steps = virtual_delta.as_secs_f64() * FIXED_HZ;
+        assert_eq!(fixed_steps, MAX_FIXED_STEPS_PER_FRAME);
     }
 }

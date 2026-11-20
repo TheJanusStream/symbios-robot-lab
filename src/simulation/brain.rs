@@ -246,6 +246,10 @@ pub struct DriveMotorsBuffers {
 /// (cache-friendly) rather than doing per-brain random entity lookups.
 ///
 /// Runs in `FixedUpdate` before `drive_motors`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Bevy system: each parameter is a query or resource it reads"
+)]
 pub fn gather_sensor_inputs(
     mut brains: Query<&mut RobotBrain>,
     mut imus: Query<(&mut AgentImu, &LinearVelocity, &AngularVelocity)>,

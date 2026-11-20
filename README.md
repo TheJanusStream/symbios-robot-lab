@@ -25,7 +25,7 @@ Click **Initialize Population** in the UI panel to start evolution.
 ### Web (WASM)
 
 ```bash
-cargo install wasm-bindgen-cli --version 0.2.108
+cargo install wasm-bindgen-cli --version 0.2.128  # must match the wasm-bindgen pin in Cargo.toml
 cargo build --release --target wasm32-unknown-unknown
 wasm-bindgen --out-dir ./dist --target web \
   --out-name symbios-robot-lab --no-typescript \

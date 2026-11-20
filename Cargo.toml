@@ -4,15 +4,18 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.18"
-bevy_egui = "0.39"
-bevy_panorbit_camera = { version = "0.34", features = ["bevy_egui"] }
-avian3d = "0.6"
+bevy = "0.20"
+# 0.43.1 is the floor: 0.43.0 broke egui's shader on wasm.
+bevy_egui = "0.43.1"
+bevy_panorbit_camera = { version = "0.36", features = ["bevy_egui"] }
+avian3d = "0.8"
 symbios = "1.5"
-symbios-robot = "0.3"
+symbios-robot = "0.5"
 symbios-neat = "0.2"
 symbios-genetics = "0.2"
-bevy_symbios = { version = "0.4", features = ["egui", "robot", "asset-loader"] }
+bevy_symbios = { version = "0.12", features = ["egui", "robot", "asset-loader"] }
+# rand and rand_pcg stay on 0.9 while symbios, symbios-neat and
+# symbios-genetics take rand 0.9 RNGs: a 0.10 RNG would not satisfy them.
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 chrono = "0.4"
@@ -22,10 +25,14 @@ rand_pcg = "0.9"
 serde_json = "1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-bevy = { version = "0.18", features = ["file_watcher"] }
+bevy = { version = "0.20", features = ["file_watcher"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+# rand 0.9 (through symbios and bevy_symbios_texture) asks getrandom 0.3 for
+# OS entropy, and on wasm32-unknown-unknown getrandom 0.3 compiles only with
+# its `wasm_js` feature on; nothing else in the graph turns it on. This
+# replaces getrandom 0.2's `js`, which no dependency used any more.
+getrandom = { version = "0.3", features = ["wasm_js"] }
 web-sys = { version = "0.3.82", features = [
     "Document",
     "Window",
@@ -38,5 +45,7 @@ web-sys = { version = "0.3.82", features = [
     "ClipboardEvent",
     "Navigator",
 ] }
-wasm-bindgen = "0.2.121"
+# Pinned exactly: the deploy's wasm-bindgen-cli must be this same version, and
+# with no committed lockfile an open requirement drifts past the CLI.
+wasm-bindgen = "=0.2.128"
 js-sys = "0.3.82"

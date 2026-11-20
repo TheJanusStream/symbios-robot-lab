@@ -25,7 +25,7 @@ pub fn setup_arena(
     // 2. Lighting
     commands.spawn((
         DirectionalLight {
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             illuminance: 10_000.0,
             ..default()
         },

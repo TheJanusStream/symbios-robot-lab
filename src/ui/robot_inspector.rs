@@ -9,6 +9,10 @@ use bevy_egui::{EguiContexts, egui};
 
 /// Renders an inspector window for the currently selected robot.
 /// Only visible when `CameraTarget.agent_index` is `Some`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Bevy system: each parameter is a query or resource it reads"
+)]
 pub fn render_robot_inspector(
     mut contexts: EguiContexts,
     target: Res<CameraTarget>,
