@@ -25,7 +25,9 @@ use symbios_genetics::scorers::Scorer;
 
 /// If any part is farther than this from the body, the robot has exploded.
 const EXPLOSION_RADIUS: f32 = 6.0;
-/// If any part moves faster than this (m/s), the physics has gone unstable.
+/// If any part moves faster than this (m/s), the physics has gone unstable:
+/// a working robot's parts stay well under it, a breaking joint's pass it
+/// within a few steps.
 const MAX_PART_SPEED: f32 = 50.0;
 /// A body below this height has fallen through the floor.
 const MIN_Y: f32 = -5.0;
@@ -139,6 +141,17 @@ impl AgentMetrics {
 /// Culls robots whose physics blew up, from the first step on, before NaN or
 /// infinite values spread through the solver. An exploded agent is marked,
 /// despawned, and scores as dominated at the end of the generation.
+///
+/// Culled robots are genuinely broken, not unlucky. A loaded hinge, usually
+/// a long leg's resting on its angle limit, starts vibrating at a few
+/// hundred hertz about the axes it should lock; within a few steps its parts
+/// move at hundreds of metres per second and the joint tears apart. One or
+/// two robots in a generation of 64 do this, more on long-legged bodies and
+/// on bodies with a part under half a kilogram. Measured without reliable
+/// effect: twice the substeps, weaker motors, softer or no angle limits,
+/// joint damping, heavier light parts. Speed caps stop the tearing but leave
+/// the limb spinning at the cap, a perpetual motor that carried robots tens
+/// of metres, so this cull stays the remedy.
 pub fn check_explosion(
     mut commands: Commands,
     brains: Query<(&RobotBrain, &Position)>,
