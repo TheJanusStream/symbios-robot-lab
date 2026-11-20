@@ -67,8 +67,9 @@ impl HeadlessLab {
         let mut app = App::new();
         // One thread: avian's parallel solver orders contacts by whichever
         // thread finishes first, and a chaotic simulation turns that into a
-        // different run. Single-threaded, a seed repeats exactly; run several
-        // seeds as separate processes to use more cores.
+        // different run. Single-threaded, a seed repeats a whole run exactly
+        // (breeding too, since symbios 1.5.3); run several seeds as separate
+        // processes to use more cores.
         let single_threaded = TaskPoolPlugin {
             task_pool_options: TaskPoolOptions::with_num_threads(1),
         };

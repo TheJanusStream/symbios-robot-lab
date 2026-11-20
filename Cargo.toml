@@ -54,7 +54,10 @@ avian3d = { version = "0.8", default-features = false, features = [
     "xpbd_joints",
     "parallel",
 ] }
-symbios = "1.5"
+# symbios 1.5.3 crosses and mutates L-systems in a fixed order (earlier
+# versions used hash order, so seeded runs diverged after generation 0);
+# symbios-neat 0.2.3 paints HyperNEAT substrates.
+symbios = "1.5.3"
 symbios-robot = "0.5"
 symbios-neat = "0.2.3"
 symbios-genetics = "0.2"

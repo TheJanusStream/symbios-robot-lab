@@ -13,7 +13,7 @@ Built with [Bevy](https://bevyengine.org/) and [Avian3D](https://github.com/Jond
 - **Joints**: driven hinges and sliders, passive ball joints with twist and swing limits, and welds.
 - **Anti-"vibrobot" fitness**: forward displacement times seven quality factors (posture, smoothness, control jerk, body jerk, a minimum speed, foot step cycles, centre-of-mass bounce), so robots that slide by vibrating score near zero.
 - **Live UI**: an egui panel with algorithm selection, parameter sliders, fitness graphs, the Pareto front and the MAP-Elites archives. Click a robot to inspect its live brain inputs.
-- **Headless runs**: the evolution loop runs without a window, for tests, batch runs and experiments. A seed repeats a run.
+- **Headless runs**: the evolution loop runs without a window, for tests, batch runs and experiments. A seed repeats a whole run exactly.
 - **WebAssembly**: deployed to GitHub Pages.
 
 ## Getting started

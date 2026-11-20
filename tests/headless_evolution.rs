@@ -47,18 +47,22 @@ fn a_short_run_finishes_every_generation_and_robots_move() {
     );
 }
 
-/// A seed repeats its first generation exactly: spawning, physics (the
-/// headless app is single-threaded), sensors, brains and scoring.
-///
-/// Breeding repeats too once `symbios` 1.5.3 is out: 1.5.2 crosses and
-/// mutates L-systems in hash order, so later generations still differ (with a
-/// local 1.5.3, five generations were identical). Then this test should run
-/// several generations.
+/// A seed repeats a whole run exactly, with either brain: spawning, physics
+/// (the headless app is single-threaded), sensors, brains, scoring and
+/// breeding. Breeding needs `symbios` 1.5.3 or later; 1.5.2 crossed and
+/// mutated L-systems in hash order, so runs diverged after generation 0.
 #[test]
-fn the_same_seed_repeats_a_generation_exactly() {
-    let a = run(small_config(7), 1);
-    let b = run(small_config(7), 1);
-    assert_eq!(a, b);
+fn the_same_seed_repeats_a_whole_run_exactly() {
+    for brain in BrainEncoding::ALL {
+        let config = || LabConfig {
+            brain,
+            ..small_config(7)
+        };
+        let a = run(config(), 4);
+        let b = run(config(), 4);
+        assert_eq!(a.len(), 4);
+        assert_eq!(a, b, "{brain} runs differ");
+    }
 }
 
 /// The default brain is HyperNEAT; direct NEAT brains run whole generations
