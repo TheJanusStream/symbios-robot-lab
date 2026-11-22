@@ -7,3 +7,4 @@ CHANGELOG.md
 symbios-robot-lab-primer.sh
 symbios_robot_lab_primer_*
 .mcp.json
+/exports

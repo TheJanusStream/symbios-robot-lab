@@ -21,7 +21,7 @@ use symbios_genetics::Phenotype;
 
 /// A robot needs more driven joints than this to be scored: bodies with
 /// fewer were reaching the Pareto front by sliding with no motors at all.
-const MIN_MOTORS: usize = 4;
+pub const MIN_MOTORS: usize = 4;
 /// Share of each new generation drawn fresh from the morphology pools, to
 /// keep the gene pool diverse.
 const FRESH_SHARE: usize = 10;
@@ -294,13 +294,13 @@ pub(crate) fn derive_offspring(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::presets::MORPHOLOGY_POOL;
+    use crate::core::fixtures::{CRAWLER, HEXAPOD};
     use crate::simulation::lifecycle::fresh_agent;
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
 
     fn walker(rng: &mut Pcg64) -> Agent {
-        let mut agent = fresh_agent(MORPHOLOGY_POOL[2], BrainEncoding::Direct, Senses::NONE, rng)
+        let mut agent = fresh_agent(HEXAPOD, BrainEncoding::Direct, Senses::NONE, rng)
             .expect("hexapod derives");
         agent.displacement = 1.0;
         agent.avg_velocity = 0.5;
@@ -405,16 +405,16 @@ mod tests {
     fn offspring_keep_a_cppn_whatever_body_they_grow_and_resize_a_direct_brain() {
         let mut rng = Pcg64::seed_from_u64(3);
         let hexapod = |encoding, rng: &mut Pcg64| {
-            fresh_agent(MORPHOLOGY_POOL[2], encoding, Senses::NONE, rng)
+            fresh_agent(HEXAPOD, encoding, Senses::NONE, rng)
                 .expect("hexapod derives")
                 .genotype
         };
         let crawler = |encoding, rng: &mut Pcg64| {
-            fresh_agent(MORPHOLOGY_POOL[4], encoding, Senses::NONE, rng)
+            fresh_agent(CRAWLER, encoding, Senses::NONE, rng)
                 .expect("crawler derives")
                 .genotype
         };
-        // Each child keeps its genome but grows the other preset's body.
+        // Each child keeps its genome but grows the other body.
         let mut cppn_child = hexapod(BrainEncoding::HyperNeat, &mut rng);
         cppn_child.morphology = crawler(BrainEncoding::HyperNeat, &mut rng).morphology;
         let mut direct_child = hexapod(BrainEncoding::Direct, &mut rng);
@@ -435,14 +435,9 @@ mod tests {
     #[test]
     fn offspring_bred_for_the_target_task_read_the_bearing() {
         let mut rng = Pcg64::seed_from_u64(6);
-        let parent = fresh_agent(
-            MORPHOLOGY_POOL[2],
-            BrainEncoding::Direct,
-            Senses::NONE,
-            &mut rng,
-        )
-        .expect("hexapod derives")
-        .genotype;
+        let parent = fresh_agent(HEXAPOD, BrainEncoding::Direct, Senses::NONE, &mut rng)
+            .expect("hexapod derives")
+            .genotype;
         let forward_inputs = parent.controller.input_ids.len();
         let agents = derive_offspring(vec![parent], Senses::BEARING, &mut rng);
         assert_eq!(

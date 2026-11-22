@@ -1,21 +1,14 @@
-// Example hot-reloadable morphology. Edit this file (or drop new .lsys files
-// into this folder) and Bevy's file_watcher will reload it on the next change;
-// the new shape will appear in the next generation's fresh-injection pool.
-//
-// This particular preset is a simple 4-leg walker — minimal so the file is
-// easy to study and tweak.
-
-#define jmin -0.6
-#define jmax 0.6
-#define eff 2000
-#define vel 5
-#define lw 0.2
-#define seg 0.9
-
-omega: !(0.6) O Si
-       [ &(70) Leg ]
-       [ \(90) &(70) Leg ]
-       [ \(180) &(70) Leg ]
-       [ /(90) &(70) Leg ]
-
-Leg -> Jl(jmin, jmax, eff, vel) J !(lw) K(seg) Jl(jmin, jmax, eff, vel) J K(seg) St
+// A body plan to change: save this file (or drop new .lsys files beside it)
+// and the next generation's fresh robots draw from it too. It starts as a
+// copy of the lab's Skink; src/core/presets.rs explains how it is written.
+#define head 0.52
+#define trunk 2.75
+#define link 1.2
+#define girth 0.36
+#define leg 0.8
+#define shank 0.2
+#define reach 0.8
+omega: O(head) Si f(0 - head) -(270) T(trunk / link * 100, link, girth, leg, shank, reach)
+T(n, m, r, a, b, w) : n > 150 -> [ G(90, -90, a, b, w) ] [ G(-90, 90, a, b, w) ] Jl(-0.5, 0.5, 4000, 5) J K(m, r) T(n - 100, m, r, a, b, w)
+T(n, m, r, a, b, w) : n <= 150 -> [ G(90, -90, a, b, w) ] [ G(-90, 90, a, b, w) ] Jl(-0.5, 0.5, 4000, 5) J K(m, r)
+G(s, t, a, b, w) -> &(s) f(w) &(t) -(90) /(90) Jl(-0.8, 0.8, 4000, 5) J K(a, b) St

@@ -23,8 +23,8 @@ use symbios_genetics::Phenotype;
 
 /// Evaluated champions the hall keeps (imported robots come on top).
 pub const HALL_SIZE: usize = 10;
-/// The most parts an imported robot may have: the presets have at most 22,
-/// and a JSON file could ask for a body the physics would choke on.
+/// The most parts an imported robot may have: the body plans start with 7
+/// or 8, and a JSON file could ask for a body the physics would choke on.
 pub const MAX_IMPORTED_PARTS: usize = 256;
 /// Where a showcased robot walks (world x and z): in front of the spawn
 /// grid, clear of the population. Several walk in lanes centred on it.
@@ -521,19 +521,14 @@ fn showcase(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::presets::MORPHOLOGY_POOL;
+    use crate::core::fixtures::HEXAPOD;
     use crate::simulation::lifecycle::fresh_agent;
 
     fn hexapod(seed: u64) -> AgentGenotype {
         let mut rng = Pcg64::seed_from_u64(seed);
-        fresh_agent(
-            MORPHOLOGY_POOL[2],
-            BrainEncoding::HyperNeat,
-            Senses::NONE,
-            &mut rng,
-        )
-        .expect("hexapod derives")
-        .genotype
+        fresh_agent(HEXAPOD, BrainEncoding::HyperNeat, Senses::NONE, &mut rng)
+            .expect("hexapod derives")
+            .genotype
     }
 
     fn phenotype(fitness: f32, seed: u64) -> Phenotype<AgentGenotype> {

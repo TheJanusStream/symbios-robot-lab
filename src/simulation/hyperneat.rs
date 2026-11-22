@@ -499,6 +499,7 @@ pub fn paint_brain(cppn: &CppnEvaluator, substrate: &Substrate) -> FeedforwardNe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::fixtures::{self, HEXAPOD, INSECT, QUADRUPED};
     use crate::core::presets::MORPHOLOGY_POOL;
     use crate::simulation::lifecycle::derive_blueprint;
     use crate::simulation::sensors::InputLayout;
@@ -506,10 +507,19 @@ mod tests {
     use rand_pcg::Pcg64;
     use symbios_neat::ConnectionGene;
 
-    fn preset(index: usize) -> RobotBlueprint {
-        derive_blueprint(MORPHOLOGY_POOL[index], 3, 3)
-            .expect("preset derives")
+    fn body(source: &str) -> RobotBlueprint {
+        derive_blueprint(source, 3, 3)
+            .expect("the body derives")
             .blueprint
+    }
+
+    /// The body plans and the fixtures: every kind of body the lab has met.
+    fn any_body() -> impl Iterator<Item = (usize, &'static str)> {
+        MORPHOLOGY_POOL
+            .iter()
+            .chain(fixtures::ALL)
+            .copied()
+            .enumerate()
     }
 
     /// A CPPN with no hidden nodes in which each listed output is
@@ -535,16 +545,16 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_gets_a_neuron_per_input_and_joint() {
-        for (i, source) in MORPHOLOGY_POOL.iter().enumerate() {
-            let derived = derive_blueprint(source, 3, 3).expect("preset derives");
+    fn every_body_gets_a_neuron_per_input_and_joint() {
+        for (i, source) in any_body() {
+            let derived = derive_blueprint(source, 3, 3).expect("the body derives");
             let substrate = Substrate::of_blueprint(&derived.blueprint);
             assert_eq!(
                 substrate.num_inputs(),
                 InputLayout::of_blueprint(&derived.blueprint).total(),
-                "preset {i}"
+                "body {i}"
             );
-            assert_eq!(substrate.joints.len(), derived.num_outputs, "preset {i}");
+            assert_eq!(substrate.joints.len(), derived.num_outputs, "body {i}");
         }
     }
 
@@ -555,8 +565,8 @@ mod tests {
     fn steering_adds_the_bearing_neurons_apart() {
         let mut rng = Pcg64::seed_from_u64(9);
         let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
-        for i in 0..MORPHOLOGY_POOL.len() {
-            let blueprint = preset(i);
+        for (i, source) in any_body() {
+            let blueprint = body(source);
             let forward = Substrate::of_blueprint(&blueprint);
             let steering = Substrate::of_body(&blueprint, Senses::BEARING);
             assert_eq!(
@@ -567,9 +577,9 @@ mod tests {
                 steering.sensors[forward.sensors.len()],
                 steering.sensors[forward.sensors.len() + 1],
             ];
-            assert!((sin - cos).length() > 0.1, "preset {i}: {sin} {cos}");
+            assert!((sin - cos).length() > 0.1, "body {i}: {sin} {cos}");
             let layout = InputLayout::of_blueprint(&blueprint).with_senses(Senses::BEARING);
-            assert_eq!(steering.num_inputs(), layout.total(), "preset {i}");
+            assert_eq!(steering.num_inputs(), layout.total(), "body {i}");
             assert_eq!(paint_brain(&cppn, &steering).num_inputs(), layout.total());
         }
     }
@@ -579,22 +589,22 @@ mod tests {
     /// grows legs of random length, so only its side legs read sides.
     #[test]
     fn joints_know_which_side_of_the_body_they_are_on() {
-        for i in [1, 2] {
-            let blueprint = preset(i);
+        for (i, source) in [QUADRUPED, HEXAPOD].into_iter().enumerate() {
+            let blueprint = body(source);
             let sides = joint_sides(&blueprint);
             assert_eq!(
                 sides.len(),
                 Substrate::of_blueprint(&blueprint).joints.len()
             );
-            assert!(sides.iter().all(|s| (-1.0..=1.0).contains(s)), "preset {i}");
+            assert!(sides.iter().all(|s| (-1.0..=1.0).contains(s)), "body {i}");
             let left = sides.iter().filter(|&&s| s > 0.2).count();
             let right = sides.iter().filter(|&&s| s < -0.2).count();
-            assert!(left > 0 && right > 0, "preset {i}: {left} vs {right}");
+            assert!(left > 0 && right > 0, "body {i}: {left} vs {right}");
             assert!(sides.iter().any(|&s| (s.abs() - 1.0).abs() < 1e-6));
         }
         // The hexapod's three legs a side split evenly, every joint (hips
         // too) taking its leg's side.
-        let hexapod = joint_sides(&preset(2));
+        let hexapod = joint_sides(&body(HEXAPOD));
         let left = hexapod.iter().filter(|&&s| s > 0.0).count();
         let right = hexapod.iter().filter(|&&s| s < 0.0).count();
         assert_eq!((left, right), (9, 9), "{hexapod:?}");
@@ -606,7 +616,7 @@ mod tests {
     fn the_tilt_adds_two_neurons_of_its_own() {
         let mut rng = Pcg64::seed_from_u64(10);
         let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
-        let blueprint = preset(2);
+        let blueprint = body(HEXAPOD);
         let senses = Senses {
             bearing: true,
             tilt: true,
@@ -627,10 +637,10 @@ mod tests {
     #[test]
     fn neurons_sit_within_the_normalized_body() {
         let reach = 1.0 + IMU_CHANNEL_SPREAD + 1e-4;
-        for i in 0..MORPHOLOGY_POOL.len() {
-            let substrate = Substrate::of_blueprint(&preset(i));
+        for (i, source) in any_body() {
+            let substrate = Substrate::of_blueprint(&body(source));
             for p in substrate.sensors.iter().chain(&substrate.joints) {
-                assert!(p.abs().max_element() <= reach, "preset {i}: {p}");
+                assert!(p.abs().max_element() <= reach, "body {i}: {p}");
             }
         }
     }
@@ -639,8 +649,8 @@ mod tests {
     fn a_fresh_cppn_paints_a_brain_shaped_for_any_body() {
         let mut rng = Pcg64::seed_from_u64(4);
         let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
-        for i in 0..MORPHOLOGY_POOL.len() {
-            let substrate = Substrate::of_blueprint(&preset(i));
+        for (_, source) in any_body() {
+            let substrate = Substrate::of_blueprint(&body(source));
             let network = paint_brain(&cppn, &substrate);
             assert_eq!(network.num_inputs(), substrate.num_inputs());
             assert_eq!(network.num_outputs(), substrate.joints.len());
@@ -652,7 +662,7 @@ mod tests {
     #[test]
     fn a_silent_cppn_paints_a_resting_brain() {
         let cppn = CppnEvaluator::new(&NeatGenome::minimal(cppn_config())).expect("acyclic");
-        let substrate = Substrate::of_blueprint(&preset(2));
+        let substrate = Substrate::of_blueprint(&body(HEXAPOD));
         let network = paint_brain(&cppn, &substrate);
         let outputs = network.evaluate(&vec![1.0; substrate.num_inputs()]);
         assert!(outputs.iter().all(|&o| o == 0.0), "{outputs:?}");
@@ -663,7 +673,7 @@ mod tests {
         // Every joint's sine weight MAX_WEIGHT * tanh(5), nothing else, so
         // every motor neuron reads tanh(weight * sine).
         let cppn = cppn_painting(&[(CLOCK_SIN_TO_MOTOR, 5.0, 0.0)]);
-        let substrate = Substrate::of_blueprint(&preset(1));
+        let substrate = Substrate::of_blueprint(&body(QUADRUPED));
         let network = paint_brain(&cppn, &substrate);
         let weight = MAX_WEIGHT * 5.0f32.tanh();
         let mut inputs = vec![0.0; substrate.num_inputs()];
@@ -685,7 +695,7 @@ mod tests {
         // hinge's angle neuron (at the hinge) excites the motor neuron at the
         // same hinge most.
         let cppn = cppn_painting(&[(LINK_EXPRESSION, 5.0, 0.0), (SENSOR_TO_MOTOR, 1.5, -6.0)]);
-        let blueprint = preset(2);
+        let blueprint = body(HEXAPOD);
         let substrate = Substrate::of_blueprint(&blueprint);
         let layout = InputLayout::of_blueprint(&blueprint);
         let network = paint_brain(&cppn, &substrate);
@@ -713,7 +723,7 @@ mod tests {
     #[test]
     fn unexpressed_links_carry_nothing_however_strong() {
         let cppn = cppn_painting(&[(LINK_EXPRESSION, -5.0, 0.0), (SENSOR_TO_MOTOR, 5.0, 0.0)]);
-        let substrate = Substrate::of_blueprint(&preset(1));
+        let substrate = Substrate::of_blueprint(&body(QUADRUPED));
         let network = paint_brain(&cppn, &substrate);
         let outputs = network.evaluate(&vec![1.0; substrate.num_inputs()]);
         assert!(outputs.iter().all(|&o| o == 0.0), "{outputs:?}");
@@ -727,7 +737,7 @@ mod tests {
         let reach = 2.0 * LOCALITY_SEED_BIAS / LOCALITY_SEED_SLOPE;
         let mut rng = Pcg64::seed_from_u64(9);
         let cppn = CppnEvaluator::new(&fresh_cppn(&mut rng)).expect("acyclic");
-        let substrate = Substrate::of_blueprint(&preset(3));
+        let substrate = Substrate::of_blueprint(&body(INSECT));
         let network = paint_brain(&cppn, &substrate);
         let resting = network.evaluate(&vec![0.0; substrate.num_inputs()]);
         let mut far_pairs = 0;

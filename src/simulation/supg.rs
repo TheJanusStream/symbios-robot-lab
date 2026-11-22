@@ -187,14 +187,14 @@ impl SupgBrain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::presets::MORPHOLOGY_POOL;
+    use crate::core::fixtures::HEXAPOD;
     use crate::simulation::lifecycle::derive_blueprint;
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
 
     fn hexapod_brain(seed: u64) -> (SupgBrain, InputLayout) {
         let mut rng = Pcg64::seed_from_u64(seed);
-        let body = derive_blueprint(MORPHOLOGY_POOL[2], 1, 3).expect("hexapod derives");
+        let body = derive_blueprint(HEXAPOD, 1, 3).expect("hexapod derives");
         let cppn = CppnEvaluator::new(&fresh_supg_cppn(&mut rng)).expect("acyclic");
         (SupgBrain::new(cppn, &body.blueprint), body.inputs)
     }

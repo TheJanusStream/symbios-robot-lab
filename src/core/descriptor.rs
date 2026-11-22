@@ -27,7 +27,7 @@ pub const LENGTH: usize = 3;
 /// count below it falls in its own column of the MAP-Elites grid.
 pub const FEET_SCALE: f32 = 12.0;
 /// A body this long (m) or longer sits at the top of the length axis. The
-/// presets measure 1.7 to 5.5 m.
+/// body plans start at 3.3 to 3.6 m and evolution lengthens them.
 pub const LENGTH_SCALE: f32 = 6.0;
 
 /// Which two traits the quality-diversity algorithms spread robots over: the

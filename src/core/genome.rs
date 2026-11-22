@@ -457,9 +457,10 @@ mod tests {
     #[test]
     fn a_genotype_keeps_its_body_as_the_l_system_writes_it() {
         let mut rng = Pcg64::seed_from_u64(9);
-        for preset in crate::core::presets::MORPHOLOGY_POOL {
+        let fixtures = crate::core::fixtures::ALL;
+        for body in crate::core::presets::MORPHOLOGY_POOL.iter().chain(fixtures) {
             let g = AgentGenotype::new(
-                preset.to_string(),
+                body.to_string(),
                 1,
                 BrainEncoding::HyperNeat,
                 NeatGenome::fully_connected(NeatConfig::cppn(7, 8), &mut rng),

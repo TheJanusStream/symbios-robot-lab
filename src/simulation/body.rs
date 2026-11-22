@@ -186,9 +186,9 @@ pub fn spawn_body(
 
 /// The body's legs: the leg number of every part on one. A leg is the chain
 /// of parts from a foot (a part nothing hangs from) up to, not including, the
-/// first part that carries more than one (or the root): a hexapod's six
-/// hip-and-knee legs, a millipede's pairs of legs but not its spine. Legs are
-/// numbered in the order of their feet's module ids. A joint is on the leg
+/// first part that carries more than one (or the root): the skink's four
+/// legs and its tail but not the trunk segment between its leg pairs. Legs
+/// are numbered in the order of their feet's module ids. A joint is on the leg
 /// of the part it carries.
 pub fn legs(blueprint: &RobotBlueprint) -> bevy::platform::collections::HashMap<ModuleId, usize> {
     use bevy::platform::collections::HashMap;
@@ -247,9 +247,9 @@ pub fn collider_for(shape: &ShapePrimitive) -> Collider {
 ///
 /// `Jl` appends to a list the turtle carries down each branch, so a knee's
 /// list holds its hip's limit first and its own last. `bevy_symbios` takes
-/// the first, which gave every knee its hip's range: the presets' knee ranges
-/// ("knees bend mostly inward") never applied. The most recent `Jl` is the
-/// one the morphology meant for the joint it precedes.
+/// the first, which gave every knee its hip's range: a range written for a
+/// knee after its hip's never applied. The most recent `Jl` is the one the
+/// morphology meant for the joint it precedes.
 fn pick_limit(limits: &[AxisLimit], drive_axis: Vec3) -> Option<&AxisLimit> {
     let drive = drive_axis.normalize_or_zero();
     limits
@@ -374,6 +374,7 @@ fn spawn_joint(commands: &mut Commands, spec: JointSpec) -> Entity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::fixtures::{self, CRAWLER, HEXAPOD};
     use crate::core::presets::MORPHOLOGY_POOL;
     use crate::simulation::lifecycle::derive_blueprint;
     use symbios_robot::SensorType;
@@ -397,16 +398,16 @@ mod tests {
     /// The hexapod's 18 driven joints are its six legs' three each.
     #[test]
     fn a_hexapod_has_six_legs_of_three_joints() {
-        let hexapod = derive_blueprint(MORPHOLOGY_POOL[2], 1, 3).expect("derives");
+        let hexapod = derive_blueprint(HEXAPOD, 1, 3).expect("derives");
         assert_eq!(hexapod.num_outputs, 18);
         assert_eq!(driven_per_leg(&hexapod.blueprint), vec![3; 6]);
     }
 
-    /// Every preset's feet (its touch sensors) end legs that a driven joint
+    /// Every body's feet (its touch sensors) end legs that a driven joint
     /// moves, so breaking any of them lames the robot.
     #[test]
     fn every_foot_ends_a_driven_leg() {
-        for (i, source) in MORPHOLOGY_POOL.iter().enumerate() {
+        for (i, source) in MORPHOLOGY_POOL.iter().chain(fixtures::ALL).enumerate() {
             let body = derive_blueprint(source, 1, 3).expect("derives").blueprint;
             let leg_of = legs(&body);
             let driven = driven_per_leg(&body);
@@ -418,11 +419,8 @@ mod tests {
                 {
                     let leg = leg_of
                         .get(id)
-                        .unwrap_or_else(|| panic!("preset {i}: foot {id} on no leg"));
-                    assert!(
-                        driven[*leg] > 0,
-                        "preset {i}: foot {id}'s leg drives nothing"
-                    );
+                        .unwrap_or_else(|| panic!("body {i}: foot {id} on no leg"));
+                    assert!(driven[*leg] > 0, "body {i}: foot {id}'s leg drives nothing");
                 }
             }
         }
@@ -480,11 +478,9 @@ mod tests {
     }
 
     #[test]
-    fn a_presets_knee_gets_its_own_range() {
-        use crate::core::presets::MORPHOLOGY_POOL;
-        use crate::simulation::lifecycle::derive_blueprint;
+    fn a_knee_gets_its_own_range() {
         // The Crawler: hips -0.5..0.5, knees -1.0..0.2.
-        let derived = derive_blueprint(MORPHOLOGY_POOL[4], 1, 3).expect("crawler derives");
+        let derived = derive_blueprint(CRAWLER, 1, 3).expect("crawler derives");
         let mut ranges: Vec<(f32, f32)> = derived
             .blueprint
             .joints

@@ -69,7 +69,7 @@ The library holds everything that does not draw; the binary adds the window.
 ```text
 src/
   lib.rs, headless.rs   the library and its headless runner
-  core/                 config, genotypes, population, presets, share codes,
+  core/                 config, genotypes, population, body plans, share codes,
                         hot-loaded morphologies
   simulation/           SimulationPlugin: bodies, sensors, brains, metrics, fitness,
                         the parent pool and the generational lifecycle, on fixed steps
@@ -78,10 +78,12 @@ src/
                         between sessions)
   visuals/              scene, robot meshes and materials, camera follow
 examples/evolve.rs      headless runs from the command line
+examples/bodyplans.rs   what breeding makes of a body plan, measured
 tests/
   headless_evolution.rs whole generations without a window
   evolution_pipeline.rs NEAT mutation, crossover, selection pressure
-  morphology_pipeline.rs L-System to blueprint topology
+  morphology_pipeline.rs L-System to blueprint topology, and what the body
+                        plans must keep for evolution to build on them
 ```
 
 ### Simulation loop
@@ -91,7 +93,7 @@ Every generation lasts a fixed number of physics steps (default 15 simulated sec
 1. **Spawn**: each agent's L-System genotype is derived into a body, and its brain is compiled into a feed-forward network for that body (see [Brains](#brains)).
 2. **Evaluate**: every fixed step, sensors fill the brain's inputs, the network drives the joint motors, and metrics accumulate. The first third of the generation is settling and is not measured.
 3. **Score**: the walker fitness above; NSGA-II adds the inverse Cost of Transport as a second objective. Robots that explode score below every intact one.
-4. **Breed**: parents are selected by the active algorithm, and each child varies its body or its brain (see [Breeding](#breeding)); a tenth of each generation is fresh bodies from the morphology presets, and the best parents can walk again in children's places.
+4. **Breed**: parents are selected by the active algorithm, and each child varies its body or its brain (see [Breeding](#breeding)); a tenth of each generation is fresh bodies from the [body plans](#body-plans), and the best parents can walk again in children's places.
 
 ### Brains
 
@@ -133,7 +135,7 @@ The IMU senses jolts (finite differences of its velocity), not lean. With **Sens
 
 ### Leg damage
 
-A leg is the chain of parts from a foot (a part nothing hangs from) up to the first part that branches: the hexapod's six legs of three joints, a millipede's pairs of legs but not its spine, the Scout's neck. Breaking a leg turns off the motors of its driven joints, so it hangs limp within its limits. **Break a leg** in a robot's inspector lames one of its legs at random (any robot, the showcased one included), and **Mend** restores them, in the spirit of Cully et al.'s robots that recover from damage (2015). With **Leg damage** on, every robot walks with one leg broken, a different one per robot and generation (drawn from the run's seed), in the hope that evolution favours gaits that survive losing any leg. That option is experimental: measured over 32 seeds, the best robots of runs bred with a leg broken walked worse with a broken leg (0.66 under fresh conditions) than robots bred intact (0.87), with pattern generators too (0.78 against 1.14).
+A leg is the chain of parts from a foot (a part nothing hangs from) up to the first part that branches: the skink's four legs and its tail but not the trunk segment between its leg pairs, the scout's eye stalk. Breaking a leg turns off the motors of its driven joints, so it hangs limp within its limits. **Break a leg** in a robot's inspector lames one of its legs at random (any robot, the showcased one included), and **Mend** restores them, in the spirit of Cully et al.'s robots that recover from damage (2015). With **Leg damage** on, every robot walks with one leg broken, a different one per robot and generation (drawn from the run's seed), in the hope that evolution favours gaits that survive losing any leg. That option is experimental: measured over 32 seeds, the best robots of runs bred with a leg broken walked worse with a broken leg (0.66 under fresh conditions) than robots bred intact (0.87), with pattern generators too (0.78 against 1.14).
 
 ### Hall of fame
 
@@ -162,9 +164,31 @@ Dominated Novelty Search (Bahlous-Boldi et al., GECCO 2025) needs no grid or bou
 
 Measured over 16 seeds of 30 generations, keeping all 64 parents (pool best fitness; distinct bodies kept): MAP-Elites over gait 1.21, 87; Dominated Novelty Search over gait 1.22, 44; MAP-Elites over body 1.66, 45; Dominated Novelty Search over body 1.05, 54. Over body traits many robots share a body exactly (a brain-only child keeps its parent's), and a fitter twin at distance zero leaves Dominated Novelty Search only the best few of each body: more kinds of body, less refinement of each. NSGA-II, which keeps no diversity on purpose, reaches about 2.5 in the same time. Keeping half the parents, the default since, Dominated Novelty Search over gait keeps half as many kinds of body (22 against 44) and its champions walk a little better under fresh conditions (+0.22, not significant); raise **Parents kept** for diversity.
 
-### Morphology presets
+### Body plans
 
-Generation 0 draws from eight legged walkers (`src/core/presets.rs`): a millipede, a quadruped, a hexapod, a three-pair insect and a low crawler, plus three that bring in the other joints and sensors: the Tripod, whose shins slide; the Strider, on flat feet with ball-joint ankles; and the Scout, a crawler with an ultrasonic eye watching the ground ahead. Evolution modifies them through parametric jitter, structural insertion and deletion, operator flips, rule duplication and topological swaps.
+Generation 0 and each generation's fresh robots draw from three body plans (`src/core/presets.rs`), relatives of one simple body with one motor per leg:
+
+- the **Skink**: a head, two pairs of stiff legs and a tail of two hinged segments (six motors);
+- the **Scout**: the skink with an ultrasonic eye on a stalk, watching the ground ahead;
+- the **Eel**: a long trunk of short links on short legs, whose tail slides in and out instead of turning (seven motors, one of them the lab's slider).
+
+They are starting points for evolution, not finished walkers, and they are written for it:
+
+- every number evolution should tune is a constant the axiom names (the L-system copies constants into the rules as it reads them, so a constant only the rules use no longer reaches the body when it mutates);
+- legs and trunk segments come from rules, never from the axiom, which mutation cannot edit;
+- one rule grows both legs of a pair, so what mutation does to a leg it does to both;
+- the trunk gains a segment each time `trunk / link` passes 2.5, 3.5 and so on, each plan starts a tenth below such a threshold, and the new segment's legs grow with one more derivation step;
+- rules compute nothing but the trunk's count-down, since mutation flips `*` to `/` and `+` to `-` wherever it finds them, and no plan uses a turn together with its opposite, since mutation swaps those only where both occur;
+- the numbers that must hold (90 degrees, a threshold of 150) are too large for mutation's nudges to move.
+
+Measured over 16 seeds of 100 generations, by each run's best four robots walking again under 8 fresh conditions: 10.84 against 3.89 for the former catalogue of eight hand-built walkers (+6.94 paired by seed), and on rough ground 7.69 against 2.92. In 3 of the 16 runs the best robot had grown a third or a fourth pair of legs on a longer trunk; nine of the former catalogue's 16 runs ended on a body cut down to five or six motors. As many robots are culled as before (2.4 per generation), most of them late in a run.
+
+Two findings shaped the catalogue more than any grammar, both from trials with earlier drafts of these plans:
+
+- **The fitness pays for few motors.** A leg with a knee or a slider near its foot sensor is steered by that sensor in steps, and the control-jerk factor left such legs 3 to 8 percent of their distance. Bodies with one motor per leg learn to walk in a few generations, so the plans have stiff legs, and what evolution adds is legs and trunk.
+- **Plans share a gene pool, and a fast starter takes it over.** A crab on six stiff legs scored twice the skink's fitness after ten generations, won all 16 runs it shared with the skink, and ended them at 4.67. A seal on two legs with knees won 15 of 16 and ended at 3.48. So the plans are one family: any two cross into a body on the same stiff legs.
+
+`cargo run --release --example bodyplans -- mutate` measures what breeding makes of each plan (or of any `.lsys` file given with `--file`): how many mutants keep their build, change it or are lost. Its other modes list a plan's parts and joints, cross plans, walk mutants to see which the physics culls, and print what a saved robot's fitness is made of. On the desktop, `assets/morphologies/example_walker.lsys` joins the three plans: a copy of the skink to edit.
 
 ## Dependencies
 

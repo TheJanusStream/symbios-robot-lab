@@ -234,6 +234,7 @@ pub fn start_new_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::fixtures::{self, HEXAPOD, QUADRUPED};
     use crate::simulation::hyperneat::{CPPN_INPUTS, CPPN_OUTPUTS};
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
@@ -244,8 +245,8 @@ mod tests {
     fn a_fresh_direct_brain_is_sized_for_its_task() {
         let mut rng = Pcg64::seed_from_u64(12);
         let size = |task, rng: &mut Pcg64| {
-            let agent = fresh_agent(MORPHOLOGY_POOL[2], BrainEncoding::Direct, task, rng)
-                .expect("hexapod derives");
+            let agent =
+                fresh_agent(HEXAPOD, BrainEncoding::Direct, task, rng).expect("hexapod derives");
             let c = &agent.genotype.controller;
             (c.input_ids.len(), c.output_ids.len())
         };
@@ -259,11 +260,11 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_derives_a_driven_body() {
-        for (i, source) in MORPHOLOGY_POOL.iter().enumerate() {
+    fn every_body_derives_driven() {
+        for (i, source) in MORPHOLOGY_POOL.iter().chain(fixtures::ALL).enumerate() {
             let derived = derive_blueprint(source, 5, INITIAL_LSYSTEM_ITERATIONS)
-                .unwrap_or_else(|| panic!("preset {i} did not derive"));
-            assert!(derived.num_outputs > 0, "preset {i} drives no joint");
+                .unwrap_or_else(|| panic!("body {i} did not derive"));
+            assert!(derived.num_outputs > 0, "body {i} drives no joint");
             assert!(derived.inputs.total() > derived.inputs.hinges);
         }
     }
@@ -271,15 +272,10 @@ mod tests {
     #[test]
     fn a_fresh_agent_is_scored_on_the_body_it_breeds() {
         let mut rng = Pcg64::seed_from_u64(11);
-        // The Quadruped preset rolls 1, 2 or 3 leg segments per leg, so a
-        // different seed would usually build a different body.
-        let agent = fresh_agent(
-            MORPHOLOGY_POOL[1],
-            BrainEncoding::Direct,
-            Senses::NONE,
-            &mut rng,
-        )
-        .expect("quadruped derives");
+        // The quadruped rolls 1, 2 or 3 leg segments per leg, so a different
+        // seed would usually build a different body.
+        let agent = fresh_agent(QUADRUPED, BrainEncoding::Direct, Senses::NONE, &mut rng)
+            .expect("quadruped derives");
         let rederived = derive_blueprint(
             &agent.genotype.morphology,
             agent.genotype.lsystem_seed,
@@ -298,9 +294,9 @@ mod tests {
     #[test]
     fn a_fresh_hyperneat_agent_gets_a_cppn_whatever_its_body() {
         let mut rng = Pcg64::seed_from_u64(12);
-        for source in MORPHOLOGY_POOL {
+        for source in MORPHOLOGY_POOL.iter().chain(fixtures::ALL) {
             let agent = fresh_agent(source, BrainEncoding::HyperNeat, Senses::NONE, &mut rng)
-                .expect("preset derives");
+                .expect("the body derives");
             assert_eq!(agent.genotype.encoding, BrainEncoding::HyperNeat);
             assert_eq!(agent.genotype.controller.input_ids.len(), CPPN_INPUTS);
             assert_eq!(agent.genotype.controller.output_ids.len(), CPPN_OUTPUTS);
