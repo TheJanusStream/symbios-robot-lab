@@ -231,6 +231,7 @@ What else the plans keep to:
 
 - every number evolution should tune is a constant the axiom names, the joints' ranges among them (the L-system copies constants into the rules as it reads them, so a constant only the rules use no longer reaches the body when it mutates; a draft whose joint ranges sat in the axiom as plain numbers walked a quarter less far);
 - the axiom does the arithmetic and holds the bounds, since mutation never edits it and flips `*` to `/`, `+` to `-` and `>` to `<` in rules but leaves `min`, `max`, `round` and `sqrt` alone: counts are rounded and clamped there, and what the physics cannot bear is bounded there (the trunk no thinner than 0.3 m, a hip turning no further than 0.75 rad either way, which brought the robots culled late in a run back from 11 a generation to 6);
+- nothing a body is made of is free: a leg is set out from the trunk by a move that builds no part, so the way from trunk to hip weighs nothing and cannot be seen, and the axiom holds a hip within 0.25 m of where its leg would touch the trunk's flank, where the plans start. Unbounded, that `reach` grew from 0.8 m to 1.5 m and more, and legs hung about a metre of empty air from the body (measured below). A likely reason, which no measurement here isolates: the trunk's joints swing each hip through an arc of that radius;
 - the rules compute nothing, not even a limb's count-down: the axiom hands a limb's number of segments down as 10 to the power of 2 to the power of it, and the rule takes a square root for each segment it grows. The count-down used to subtract, and with its sign flipped, which 1.5 percent of the mutations of a body did, every limb grew a whole segment with every step: legs of two, three and four parts, each as long as the whole leg had been;
 - a limb ends on a number, not below one: the rule grows while its count is above an end mark the axiom hands down, and a finished limb's count is the mark itself, which is neither above it nor below (the L-system calls numbers equal within a part in a hundred million). Mutation also copies rules, and a copy whose comparison then flipped used to match every finished limb: 41 parts at four steps. Now it matches nothing;
 - a condition holds one comparison (the L-system writes an AND back in a form it cannot read again, and the lab stores bodies as written back), and no plan uses a turn together with its opposite, since mutation swaps those only where both occur;
@@ -256,7 +257,7 @@ So the one-rule catalogue walks as far as the former one, within what 16 runs ca
 
 The count-down and the way a limb ends were then rewritten as described above, which changes no starting body. Measured the same way, with the fresh conditions on moved spots, against the one-rule plans as first written (their champions walked again on the same moved spots):
 
-| | count-down that could flip | these |
+| | count-down that could flip | square root and end mark |
 | --- | --- | --- |
 | Flat floor, distance | 25.7 m | 24.8 m (-0.9, p = 0.75) |
 | Rough ground, distance | 22.0 m | 24.5 m (+2.5, p = 0.22) |
@@ -266,6 +267,22 @@ The count-down and the way a limb ends were then rewritten as described above, w
 | Champions with a knee or a third pair of legs | none of 64, on either ground | none of 64, on either ground |
 
 Closing the ways to longer legs costs no distance that 16 runs can tell. More robots were culled on the flat floor (over the last 30 generations 9.5 a generation against 6.6, p = 0.04, with no difference on rough ground and none in how often champions break); that is unexplained and may be chance.
+
+Last, the hips' reach was bounded. In the champions of the table above it had grown from 0.8 m to a median of 1.45 m on the flat floor and 1.71 m on rough ground (2.3 m at most): between the trunk's surface and a leg's lay 0.95 m and 1.17 m of nothing, where the skink starts with 0.24 m and the eel with 0.14 m. Measured the same way against those plans, with the hip held within 0.25 m of the trunk's flank (these), set on the flank itself, or carried by a welded bar that fills the reach:
+
+| | reach unbounded | these | hip on the flank | welded bar |
+| --- | --- | --- | --- | --- |
+| Flat floor, distance | 24.8 m | 20.3 m (-4.5, p < 0.01) | 19.0 m | 9.9 m |
+| Rough ground, distance | 24.5 m | 14.6 m (-9.9, p < 0.01) | 11.9 m | not run |
+| Champions' fresh walks ending in a broken robot, flat and rough | 9.0% and 7.2% | 1.4% and 1.2% (p < 0.01, p = 0.01) | 2.0% and 0% | 0.5% |
+| Robots culled per generation, flat and rough | 5.0 and 4.6 | 1.0 and 1.1 | 2.0 and 0.8 | 3.1 |
+| Recorded score kept under fresh conditions, flat and rough | 84% and 85% | 91% and 89% | 83% and 80% | 85% |
+| Largest gap between trunk and leg | 1.76 m | 0.25 m | none | 0.58 m |
+| Best robots with a third pair of legs, flat and rough | none | 1 of 16 and none | 3 of 16 and none | 7 of 16 |
+
+Bounding the reach costs a fifth of the distance on the flat floor and two fifths on rough ground, and the robots then break a sixth as often, one culled a generation where five were. Why they break less is not settled: among the unbounded champions a longer reach did not go with more broken walks (correlations of +0.06 and +0.04), and the bounded ones are also slower and 50 and 25 kg heavier. On rough ground the hip on the flank walks less far than the hip a hand's breadth off it (p < 0.01; on the flat floor 1.2 m less, p = 0.16), and it keeps less of its recorded score. With the bar, the robots of the first generation already reach 1.5 m where they reach 4.4 m without, for a reason not found.
+
+What the bound leaves open: evolution buys a little reach with thickness (on the flat floor the trunk's radius grew by 0.04 m and the legs' by 0.03 m more than without the bound: hips at 0.84 m on average, 0.95 m at most); the bound does not know the head, which the first pair of legs hangs from, so where a head has grown the front legs sit partly inside it; and mutation can still set a move of its own into a rule and lengthen it, which no champion had. A robot kept in the hall of fame keeps the axiom it was bred with, so one kept from before carries its unbounded reach into its line.
 
 What a mutation grows is not kept where it does not pay, and knees do not (measured with the count-down that could flip): bred from a plan that starts with knees, 14 runs in 16 had dropped them after 100 generations, and the two that had not walked 2.3 m and 4.1 m where the others walked 20 m. A leg split by a driven hinge is, with these brains, a worse leg on the flat floor, and on rough ground no champion kept one either.
 

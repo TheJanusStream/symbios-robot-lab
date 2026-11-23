@@ -691,6 +691,48 @@ fn the_axiom_bounds_what_a_constant_may_do() {
     assert_eq!(trunk.len(), 1);
 }
 
+/// How far from the body's midline each part off it sits (m): the legs,
+/// which hang straight down from their hips.
+fn hips(derived: &DerivedBody) -> Vec<f32> {
+    let parts = derived.blueprint.modules.values();
+    parts
+        .map(|m| m.transform.0.z.abs())
+        .filter(|z| *z > 1e-3)
+        .collect()
+}
+
+/// The way from the trunk to a hip builds no part, so the axiom bounds it:
+/// a leg hangs `reach` out from the trunk's axis, but no further than a
+/// quarter of a metre beyond where it would touch the trunk's flank (the
+/// trunk's radius and the leg's). Unbounded, the reach grew past two metres
+/// and the legs hung in the air beside the body. The plans start inside the
+/// bound, so it changes no starting body, and a reach can still shrink.
+#[test]
+fn a_hip_stays_by_the_trunks_flank() {
+    let all_at = |source: &str, want: f32| {
+        let hips = hips(&body(source, INITIAL_LSYSTEM_ITERATIONS));
+        assert_eq!(hips.len(), 4, "{hips:?}");
+        assert!(
+            hips.iter().all(|z| (z - want).abs() < 1e-5),
+            "{hips:?} for {want}"
+        );
+    };
+    for ((_, source), reach) in plans().zip([0.8, 0.8, 0.7]) {
+        all_at(source, reach);
+        // The trunk's radius 0.36, the leg's 0.2, and a quarter of a metre.
+        all_at(&with_constant(source, "reach", 3.0), 0.81);
+        all_at(&with_constant(source, "reach", 0.5), reach / 2.0);
+    }
+    let skink = MORPHOLOGY_POOL[0];
+    let far = with_constant(skink, "reach", 3.0);
+    // A thicker trunk or leg carries the hip further out with it.
+    all_at(&with_constant(&far, "girth", 1.5), 0.99);
+    all_at(&with_constant(&far, "shank", 1.5), 0.91);
+    // The trunk the bound counts is the one the body has, 0.3 m at least:
+    // under a thin trunk the skink's own reach is already too far.
+    all_at(&with_constant(skink, "girth", 0.5), 0.75);
+}
+
 /// A fresh body has a step in hand: every plan is whole a step before the
 /// lab's starting count, and a step before that still lacks its hind feet's
 /// sensors (they arrive a step after the leg they end).

@@ -51,16 +51,18 @@
 //! it in the first child.
 //!
 //! What evolution makes of it, over sixteen runs of 100 generations on the
-//! flat floor and sixteen on rough ground: nothing yet. No champion had
-//! grown a third pair of legs, and none had a knee, with these rules or
-//! with the subtracting count-down before them. Bred from a plan that
-//! starts with knees (measured with that count-down), fourteen runs in
-//! sixteen had dropped them, and the two that had not walked 2 and 4 m
-//! where the others walked 20. A leg split by a driven hinge is, with these
-//! brains, a worse leg. The grammar offers the growth; it cannot make it
-//! pay. Nor does closing the ways to longer legs cost distance: champions
-//! walked 24.8 m on the flat floor and 24.5 m on rough ground, against 25.7
-//! and 22.0 with the count-down that could flip (p = 0.75 and 0.22).
+//! flat floor and sixteen on rough ground: little yet. In one of the
+//! sixteen runs on the flat floor the champions had grown a third pair of
+//! legs, on rough ground in none, and none had a knee. Bred from
+//! a plan that starts with knees (measured with a count-down that
+//! subtracted), fourteen runs in sixteen had dropped them, and the two that
+//! had not walked 2 and 4 m where the others walked 20. A leg split by a
+//! driven hinge is, with these brains, a worse leg. The grammar offers the
+//! growth; it cannot make it pay. Closing the ways to longer legs cost no
+//! distance (24.8 m on the flat floor and 24.5 m on rough ground, against
+//! 25.7 and 22.0 with the count-down that could flip, p = 0.75 and 0.22,
+//! all with the hips' reach still unbounded); bounding the reach did (see
+//! "Nothing a body is made of is free" below).
 //!
 //! A cross can grow too: a child of a skink and an eel that takes the one's
 //! `trunk` and the other's `link` has a trunk of three segments.
@@ -86,6 +88,25 @@
 //!   hip turning no further than 0.75 rad either way (unbounded, 11 robots a
 //!   generation were culled late in a run; bounded, 6), the trunk's joints
 //!   1.2 rad.
+//! - **Nothing a body is made of is free.** A leg is set out from the trunk
+//!   by a move that builds no part, so the way from trunk to hip weighs
+//!   nothing and cannot be seen. Unbounded, that `reach` grew from 0.8 m to
+//!   a median of 1.5 m on the flat floor and 1.7 m on rough ground in 100
+//!   generations, 2.3 m at most, and the legs hung about a metre of empty
+//!   air from the body. (A likely reason, which no measurement isolates:
+//!   the trunk's joints swing each hip through an arc of that radius.) The
+//!   axiom now holds a hip within 0.25 m of where its leg would touch the
+//!   trunk's flank, which is where the plans start. Champions then walked
+//!   20.3 m on the flat floor and 14.6 m on rough ground, where they had
+//!   walked 24.8 and 24.5, broke in 1.4 and 1.2 percent of their walks
+//!   where they had in 9.0 and 7.2, and one robot a generation was culled
+//!   where five had been. Why they break less is not settled: among the
+//!   unbounded champions a longer reach did not go with more broken walks.
+//!   A hip set on the flank itself walked less far on rough ground (11.9 m;
+//!   19.0 m on the flat floor), and a welded bar in place of the empty
+//!   reach far less (9.9 m on the flat floor). The bound does not know the
+//!   head, which the first pair of legs hangs from, and mutation can still
+//!   set a move of its own into a rule and lengthen it; no champion had.
 //! - **The rules compute nothing, not even the count-down.** A limb counts
 //!   its segments down by taking a square root, which mutation cannot flip.
 //!   An earlier count-down subtracted (`n - 100`). With the sign flipped,
@@ -219,13 +240,22 @@ macro_rules! trunk_segments {
     };
 }
 
+/// How far out from the trunk's axis a leg hangs: `reach`, but no further
+/// than a quarter of a metre beyond where the leg would touch the trunk's
+/// flank. The way out builds no part, and unbounded it grew to two metres
+/// and more.
+macro_rules! hip_reach {
+    () => {
+        "min(reach, max(girth, 0.3) + shank + 0.25)"
+    };
+}
+
 /// What the axiom hands the trunk after the head: back to the head's centre,
 /// a quarter turn to lie level, then the trunk as a limb (its segments, the
 /// end mark, a segment's length and radius, its joints' ranges, 1000 for
-/// "no leg") and
-/// what its side limbs, the legs, are to be (their segments, a segment's
-/// length and radius, their reach, the hips' ranges and the knees', 0 for
-/// "a leg"). Counts, lengths and bounds are worked out here, where mutation
+/// "no leg") and what its side limbs, the legs, are to be (their segments,
+/// a segment's length and radius, their reach, the hips' ranges and the
+/// knees', 0 for "a leg"). Counts, lengths and bounds are worked out here, where mutation
 /// does not reach: a count of segments is handed down as 10 to the power of
 /// 2 to the power of it, which the rule counts down by square roots, and a
 /// leg's segments are each the leg's length divided by their number.
@@ -240,7 +270,9 @@ macro_rules! trunk_start {
             leg_segments!(),
             "), leg / ",
             leg_segments!(),
-            ", shank, reach, min(fore, 0.75), min(aft, 0.75), min(bend, 1), min(bend, 1), 0)"
+            ", shank, ",
+            hip_reach!(),
+            ", min(fore, 0.75), min(aft, 0.75), min(bend, 1), min(bend, 1), 0)"
         )
     };
 }
