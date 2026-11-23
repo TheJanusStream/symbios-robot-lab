@@ -204,7 +204,7 @@ pub fn spawn_agents(
                     derived.blueprint
                 }
                 None => {
-                    warn!("Agent {index}: its morphology builds no body");
+                    warn!("Agent {index}: its morphology builds no body the lab takes");
                     continue;
                 }
             },

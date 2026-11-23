@@ -3,6 +3,7 @@
 
 use bevy::math::Vec2;
 use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
+use symbios_robot_lab::core::presets::{MORPHOLOGY_POOL, PLAN_NAMES};
 use symbios_robot_lab::headless::{
     FRESH_CLONES, HeadlessLab, condition_means, fresh_scores, fresh_walks,
 };
@@ -184,10 +185,15 @@ fn robots_walk_to_targets_reading_their_bearing() {
 }
 
 /// The hall keeps the run's best robot, which can be sent into a new run's
-/// first generation, as a body new to that run.
+/// first generation, as a body new to that run. (No parent walks again
+/// here: one that does is kept at its average, which the best single walk
+/// of the run need not equal.)
 #[test]
 fn champions_enter_the_hall_and_return_to_evolution() {
-    let mut lab = HeadlessLab::new(small_config(19));
+    let mut lab = HeadlessLab::new(LabConfig {
+        retests: 0,
+        ..small_config(19)
+    });
     let best = lab.run(3, |_| {}).expect("finishes").best_all_time;
     let champion = lab
         .hall_of_fame()
@@ -326,6 +332,49 @@ fn the_best_parents_walk_again() {
         "no champion walked again"
     );
     assert_eq!(history, run(config(), 4));
+}
+
+/// A run can breed from plans of its own in place of the lab's: every
+/// robot then descends from one of them. Mutation never edits an axiom, and
+/// of the lab's plans only the scout's axiom mounts an eye, so a run bred
+/// from the scout alone holds nothing but robots with one.
+#[test]
+fn a_run_breeds_from_the_plans_it_is_given() {
+    let scout = PLAN_NAMES
+        .iter()
+        .position(|name| *name == "Scout")
+        .expect("a scout");
+    let has_eye = |morphology: &str| {
+        morphology
+            .lines()
+            .any(|line| line.starts_with("omega:") && line.contains(" Su"))
+    };
+    let lone: Vec<bool> = MORPHOLOGY_POOL.iter().map(|plan| has_eye(plan)).collect();
+    assert_eq!(lone.iter().filter(|eye| **eye).count(), 1);
+    assert!(lone[scout]);
+
+    let mut lab = HeadlessLab::new(small_config(41));
+    lab.breed_from([("scout.lsys".to_string(), MORPHOLOGY_POOL[scout].to_string())]);
+    lab.run(2, |_| {}).expect("finishes");
+    let champions = lab.hall_of_fame().champions();
+    assert!(!champions.is_empty(), "a robot walked");
+    assert!(champions.iter().all(|c| has_eye(&c.genotype.morphology)));
+    let agents = &lab.population().agents;
+    assert!(agents.iter().all(|a| has_eye(&a.genotype.morphology)));
+
+    // Without them, the lab's three plans all turn up; and so they do when
+    // the plans named first are taken back.
+    let mut lab = HeadlessLab::new(small_config(41));
+    lab.run(1, |_| {}).expect("finishes");
+    let agents = &lab.population().agents;
+    assert!(agents.iter().any(|a| !has_eye(&a.genotype.morphology)));
+
+    let mut lab = HeadlessLab::new(small_config(41));
+    lab.breed_from([("scout.lsys".to_string(), MORPHOLOGY_POOL[scout].to_string())]);
+    lab.breed_from([]);
+    lab.run(1, |_| {}).expect("finishes");
+    let agents = &lab.population().agents;
+    assert!(agents.iter().any(|a| !has_eye(&a.genotype.morphology)));
 }
 
 /// Fresh scores: a robot walks under new conditions, one score per

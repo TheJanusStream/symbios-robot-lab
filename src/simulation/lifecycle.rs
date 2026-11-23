@@ -39,9 +39,17 @@ pub struct DerivedBody {
     pub num_outputs: usize,
 }
 
+/// The most parts a body may have. A mutation can make a grammar grow
+/// without end: a duplicated rule whose comparison then flips matches the
+/// modules that were meant to stay inert, and the body plans' skink had 99
+/// parts at five derivation steps and 289 at six. The plans' own growth
+/// stays far below (three leg pairs with a knee each: 16 parts).
+pub const MAX_BODY_PARTS: usize = 48;
+
 /// Derives `morphology` with `seed` for `iterations` steps and builds its
 /// blueprint, with every part at least `MIN_PART_EXTENT` in size. `None`
-/// if the source does not parse or produces no parts.
+/// if the source does not parse, produces no parts, or produces more than
+/// [`MAX_BODY_PARTS`].
 pub fn derive_blueprint(morphology: &str, seed: u64, iterations: usize) -> Option<DerivedBody> {
     let mut sys = System::from_source(morphology).ok()?;
     sys.set_seed(seed);
@@ -50,7 +58,7 @@ pub fn derive_blueprint(morphology: &str, seed: u64, iterations: usize) -> Optio
     let mut interpreter = RobotInterpreter::new(RobotConfig::default());
     interpreter.populate_standard_symbols(&sys.interner);
     let mut blueprint = interpreter.build_blueprint(&sys.state);
-    if blueprint.modules.is_empty() {
+    if blueprint.modules.is_empty() || blueprint.modules.len() > MAX_BODY_PARTS {
         return None;
     }
     sanitize_parts(&mut blueprint);
@@ -108,9 +116,13 @@ pub fn brain_config(num_inputs: usize, num_outputs: usize) -> NeatConfig {
     }
 }
 
-/// A morphology drawn uniformly from the presets and the runtime pool.
+/// A morphology drawn uniformly from the presets and the runtime pool, or
+/// from the runtime pool alone where it stands in for the presets.
 pub fn pick_morphology(runtime_pool: &RuntimeMorphologyPool, rng: &mut impl Rng) -> String {
     let runtime = runtime_pool.sources();
+    if runtime_pool.stands_alone() {
+        return runtime[rng.random_range(0..runtime.len())].1.clone();
+    }
     let pick = rng.random_range(0..MORPHOLOGY_POOL.len() + runtime.len());
     match MORPHOLOGY_POOL.get(pick) {
         Some(source) => (*source).to_string(),
@@ -158,8 +170,9 @@ pub fn fresh_agent(
     ))
 }
 
-/// A fresh agent from the presets and the runtime pool, retrying a few
-/// draws if a morphology fails to derive.
+/// A fresh agent from the presets and the runtime pool (or from the pool
+/// alone where it stands in for them), retrying a few draws if a
+/// morphology fails to derive.
 pub fn fresh_agent_from_pool(
     runtime_pool: &RuntimeMorphologyPool,
     encoding: BrainEncoding,
@@ -257,6 +270,39 @@ mod tests {
             forward_in + crate::simulation::sensors::NUM_BEARING_INPUTS
         );
         assert_eq!(target_out, forward_out);
+    }
+
+    /// Loaded plans join the lab's own in the draw, or, standing alone,
+    /// are all that is drawn.
+    #[test]
+    fn a_pool_standing_alone_is_all_that_is_drawn() {
+        let mut pool = RuntimeMorphologyPool::default();
+        pool.upsert("crawler.lsys".into(), fixtures::CRAWLER.into());
+        let mut rng = Pcg64::seed_from_u64(9);
+        let joined: Vec<String> = (0..64).map(|_| pick_morphology(&pool, &mut rng)).collect();
+        assert!(joined.iter().any(|plan| plan == fixtures::CRAWLER));
+        assert!(joined.iter().any(|plan| plan != fixtures::CRAWLER));
+        pool.stand_alone(true);
+        assert!((0..64).all(|_| pick_morphology(&pool, &mut rng) == fixtures::CRAWLER));
+    }
+
+    /// A grammar that doubles its parts with every step builds a body while
+    /// it stays within [`MAX_BODY_PARTS`], and none beyond.
+    #[test]
+    fn a_body_of_too_many_parts_is_refused() {
+        let doubling = "omega: A\nA -> J K(0.4, 0.1) [ +(30) A ] [ -(30) A ]";
+        let parts = |steps| derive_blueprint(doubling, 1, steps).map(|d| d.blueprint.modules.len());
+        assert_eq!(parts(5), Some(31));
+        const { assert!(63 > MAX_BODY_PARTS) };
+        assert_eq!(parts(6), None);
+        // A chain of a part a step: the cap's own count builds, one more
+        // does not.
+        let chain = |links: usize| {
+            let source = format!("omega: A({links})\nA(n) : n > 0.5 -> J K(0.2, 0.05) A(n - 1)");
+            derive_blueprint(&source, 1, links).map(|d| d.blueprint.modules.len())
+        };
+        assert_eq!(chain(MAX_BODY_PARTS), Some(MAX_BODY_PARTS));
+        assert_eq!(chain(MAX_BODY_PARTS + 1), None);
     }
 
     #[test]

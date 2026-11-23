@@ -27,6 +27,9 @@
 //!   NSGA-II only [off]
 //! - `--leg-damage on|off` every robot walks with one leg broken [off]
 //! - `--tilt on|off` brains also sense the body's tilt [off]
+//! - `--plans DIR` breed from the `.lsys` body plans of a folder in place
+//!   of the lab's own: how a plan, or a mix of plans, is judged before it
+//!   joins them
 //! - `--import PATH` a robot's JSON (saved from the hall of fame) to send
 //!   into the first generation; repeatable
 //! - `--save-best PATH` write the run's best robot as JSON at the end
@@ -50,8 +53,11 @@ use std::fmt::Write as _;
 use std::time::Instant;
 use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
 use symbios_robot_lab::core::descriptor::QdDescriptor;
+use symbios_robot_lab::core::genome::INITIAL_LSYSTEM_ITERATIONS;
 use symbios_robot_lab::headless::{FreshWalk, HeadlessLab, condition_means, fresh_walks};
+use symbios_robot_lab::simulation::generation::MIN_MOTORS;
 use symbios_robot_lab::simulation::hall_of_fame::Champion;
+use symbios_robot_lab::simulation::lifecycle::{MAX_BODY_PARTS, derive_blueprint};
 use symbios_robot_lab::simulation::telemetry::GenerationSummary;
 
 const DEFAULT_GENERATIONS: usize = 20;
@@ -63,6 +69,7 @@ struct Options {
     config: LabConfig,
     csv: Option<String>,
     imports: Vec<String>,
+    plans: Option<String>,
     save_best: Option<String>,
     fresh: usize,
     save_hall: Option<String>,
@@ -115,6 +122,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
         config: LabConfig::default(),
         csv: None,
         imports: Vec::new(),
+        plans: None,
         save_best: None,
         fresh: 0,
         save_hall: None,
@@ -183,6 +191,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                 options.config.leg_damage = switch(&flag, &value()?)?;
             }
             "--import" => options.imports.push(value()?),
+            "--plans" => options.plans = Some(value()?),
             "--save-hall" => options.save_hall = Some(value()?),
             "--score" => options.score.push(value()?),
             "--walks" => options.walks = Some(value()?),
@@ -193,6 +202,9 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
     }
     if options.config.population_size < 2 {
         return Err("--population must be at least 2".into());
+    }
+    if options.plans.is_some() && !options.score.is_empty() {
+        return Err("--plans breeds a run: it has no meaning with --score".into());
     }
     if options.walks.is_some() && options.fresh == 0 && options.score.is_empty() {
         return Err("--walks writes fresh walks: give --fresh N or --score PATH with it".into());
@@ -263,12 +275,55 @@ fn score(options: &Options) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The `.lsys` files of `dir`, by name: each plan's file name and source.
+fn plans_in(dir: &str) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|err| format!("{dir}: {err}"))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "lsys"))
+        .collect();
+    paths.sort();
+    if paths.is_empty() {
+        return Err(format!("{dir} holds no .lsys file").into());
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(&path)
+                .map_err(|err| format!("{}: {err}", path.display()))?;
+            // A plan no fresh robot can be drawn from would leave the run
+            // without a first generation.
+            let scorable = derive_blueprint(&source, 1, INITIAL_LSYSTEM_ITERATIONS)
+                .is_some_and(|body| body.num_outputs > MIN_MOTORS);
+            if !scorable {
+                return Err(format!(
+                    "{}: builds no body the lab scores in {INITIAL_LSYSTEM_ITERATIONS} steps (it \
+                     must parse, have 1 to {MAX_BODY_PARTS} parts and drive more than \
+                     {MIN_MOTORS} joints)",
+                    path.display()
+                )
+                .into());
+            }
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            Ok((name, source))
+        })
+        .collect()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options(std::env::args().skip(1))?;
     if !options.score.is_empty() {
         return score(&options);
     }
     let mut lab = HeadlessLab::new(options.config.clone());
+    if let Some(dir) = &options.plans {
+        let plans = plans_in(dir)?;
+        let names: Vec<&str> = plans.iter().map(|(name, _)| name.as_str()).collect();
+        println!("breeding from the plans of {dir}: {}", names.join(", "));
+        lab.breed_from(plans);
+    }
     for path in &options.imports {
         let champion = Champion::from_json(&std::fs::read_to_string(path)?)
             .map_err(|err| format!("{path}: {err}"))?;

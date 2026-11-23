@@ -11,7 +11,7 @@ use crate::core::population::Population;
 use crate::core::share;
 use crate::simulation::brain::compile_brain;
 use crate::simulation::fitness::SCORING;
-use crate::simulation::lifecycle::derive_blueprint;
+use crate::simulation::lifecycle::{MAX_BODY_PARTS, derive_blueprint};
 use crate::simulation::rng::LabRng;
 use crate::simulation::spawn::{RobotSpawn, SHOWCASE_LANES, showcase_index, spawn_robot};
 use crate::simulation::target::{UserTarget, target_for};
@@ -24,9 +24,6 @@ use symbios_genetics::Phenotype;
 
 /// Evaluated champions the hall keeps (imported robots come on top).
 pub const HALL_SIZE: usize = 10;
-/// The most parts an imported robot may have: the body plans start with 7
-/// or 8, and a JSON file could ask for a body the physics would choke on.
-pub const MAX_IMPORTED_PARTS: usize = 256;
 /// Where a showcased robot walks (world x and z): in front of the spawn
 /// grid, clear of the population. Several walk in lanes centred on it.
 pub const SHOWCASE_SPOT: Vec2 = Vec2::new(0.0, -64.0);
@@ -76,7 +73,7 @@ impl Champion {
     /// [`MAX_LSYSTEM_ITERATIONS`] derivation steps, a clock and a steering
     /// gain in their evolvable ranges, a brain genome that is whole, finite
     /// and compiles, and a body
-    /// of at most [`MAX_IMPORTED_PARTS`] parts that drives joints. It loses
+    /// of at most [`MAX_BODY_PARTS`] parts that drives joints. It loses
     /// its identity: identities belong to the session that issued them, and
     /// one robot's could be another's here (it gets a new one if it joins
     /// evolution). A champion scored by another fitness formula than today's
@@ -130,14 +127,10 @@ impl Champion {
         }
         let Some(body) = derive_blueprint(&g.morphology, g.lsystem_seed, g.lsystem_iterations)
         else {
-            return Err("its morphology builds no body".to_string());
-        };
-        if body.blueprint.modules.len() > MAX_IMPORTED_PARTS {
             return Err(format!(
-                "its body has {} parts (at most {MAX_IMPORTED_PARTS})",
-                body.blueprint.modules.len()
+                "its morphology builds no body, or one of more than {MAX_BODY_PARTS} parts"
             ));
-        }
+        };
         if body.num_outputs == 0 {
             return Err("its body drives no joint".to_string());
         }
@@ -505,7 +498,7 @@ fn showcase(
         genotype.lsystem_seed,
         genotype.lsystem_iterations,
     )
-    .ok_or("its morphology builds no body")?;
+    .ok_or("its morphology builds no body the lab takes")?;
     let mut genotype = genotype.clone();
     let inputs = body.inputs.with_senses(config.senses()).total();
     if genotype.encoding == BrainEncoding::Direct
@@ -674,6 +667,30 @@ mod tests {
         });
         assert_eq!(hall.champions()[0].fitness, Some(0.5));
         assert_eq!(hall.champions()[1].fitness, None);
+    }
+
+    /// A robot whose body has more parts than the lab takes is refused: a
+    /// file could ask for a body the physics would choke on.
+    #[test]
+    fn a_robot_of_too_many_parts_is_not_imported() {
+        let mut genotype = hexapod(31);
+        // Twice the parts with every step: 31 at five, 63 at six.
+        genotype.morphology = "omega: A\nA -> J K(0.4, 0.1) [ +(30) A ] [ -(30) A ]".to_string();
+        let robot = |steps| {
+            let mut genotype = genotype.clone();
+            genotype.lsystem_iterations = steps;
+            Champion {
+                genotype,
+                fitness: None,
+                generation: None,
+                walks: 1,
+                scoring: SCORING,
+            }
+        };
+        assert!(Champion::from_json(&robot(5).to_json()).is_ok());
+        let refused = Champion::from_json(&robot(6).to_json());
+        let reason = refused.err().expect("63 parts are too many");
+        assert!(reason.contains("parts"), "{reason}");
     }
 
     /// An imported robot loses its identity, so it never takes the place

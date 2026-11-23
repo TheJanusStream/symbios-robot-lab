@@ -1,8 +1,10 @@
 //! Morphologies loaded at runtime, which join the static
-//! [`crate::core::presets::MORPHOLOGY_POOL`] when fresh bodies are injected.
+//! [`crate::core::presets::MORPHOLOGY_POOL`] when fresh bodies are injected,
+//! or stand in for it (see [`RuntimeMorphologyPool::stand_alone`]).
 //!
-//! The pool is plain data so the simulation can use it on every target; only
-//! the native app fills it, from `.lsys` files (see `core::hotload`).
+//! The pool is plain data so the simulation can use it on every target. The
+//! native app fills it from `.lsys` files (see `core::hotload`), a headless
+//! run from the plans it is told to breed from.
 
 use bevy::prelude::*;
 
@@ -11,6 +13,8 @@ use bevy::prelude::*;
 pub struct RuntimeMorphologyPool {
     /// `(asset_path, source)` pairs.
     entries: Vec<(String, String)>,
+    /// The loaded plans stand in for the lab's own instead of joining them.
+    alone: bool,
 }
 
 impl RuntimeMorphologyPool {
@@ -38,6 +42,23 @@ impl RuntimeMorphologyPool {
     pub fn remove(&mut self, path: &str) {
         self.entries.retain(|(p, _)| p != path);
     }
+
+    /// Drops every loaded source.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Makes fresh bodies come from the loaded plans alone, the lab's own
+    /// body plans left out: how one plan, or a mix of them, is bred on its
+    /// own to see what it is worth. An empty pool stands in for nothing.
+    pub fn stand_alone(&mut self, alone: bool) {
+        self.alone = alone;
+    }
+
+    /// Whether the loaded plans stand in for the lab's own.
+    pub fn stands_alone(&self) -> bool {
+        self.alone && !self.entries.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -51,6 +72,17 @@ mod tests {
         pool.upsert("a.lsys".into(), "omega: B(2)".into());
         assert_eq!(pool.len(), 1);
         assert_eq!(pool.sources()[0].1, "omega: B(2)");
+    }
+
+    #[test]
+    fn only_a_filled_pool_stands_alone() {
+        let mut pool = RuntimeMorphologyPool::default();
+        pool.stand_alone(true);
+        assert!(!pool.stands_alone(), "an empty pool replaces nothing");
+        pool.upsert("a.lsys".into(), "omega: B(1)".into());
+        assert!(pool.stands_alone());
+        pool.stand_alone(false);
+        assert!(!pool.stands_alone());
     }
 
     #[test]

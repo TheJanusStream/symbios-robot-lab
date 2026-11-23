@@ -2,34 +2,54 @@
 //! from: three relatives of one simple body, written so that evolution can
 //! build on them.
 //!
-//! # Why so few, and so plain
+//! # One rule for every limb
 //!
-//! The former catalogue held eight hand-built walkers of 9 to 18 motors.
-//! Bred alone, two of them reached a fitness of 1 in twelve generations, and
-//! what evolution did with the catalogue was to cut bodies down: sixteen runs
-//! of 100 generations ended on the millipede fourteen times, nine of those
-//! stripped to one leg pair and a tail on five or six motors (the lab scores
-//! no body with fewer than five). Two things decided the choice, and neither
-//! was how well a plan walks at first:
+//! A body is a limb that bears limbs. One rule, `L`, grows every segment of
+//! every limb: the pair of side limbs the segment bears, the hinge it hangs
+//! on, the segment itself, and the rest of the limb. The trunk is a limb
+//! whose segments each bear a pair of legs. A leg is a limb whose own side
+//! limbs are told to have no segments, and so never grow. A second rule,
+//! `Y`, gives the last segment of a leg its foot sensor.
 //!
-//! - **The fitness of the time paid for few motors.** It taxed the speed of
-//!   every joint (see [`crate::simulation::fitness`]): a leg with a knee or
-//!   a slider near its foot sensor is steered by that sensor in steps, and
-//!   kept 3 to 8 percent of its distance in the plans tried, while a body
-//!   with one motor per leg learned to walk in a few generations. So the
-//!   plans have stiff legs, and what evolution adds is legs and trunk. The
-//!   fitness that replaced it does not: when it came, the drafts with kneed
-//!   and with sliding legs scored 5.9 and 6.1 after twelve generations where
-//!   these plans scored 8.2 (0.26 and 0.24 against 1.6 before), so such legs
-//!   are worth another look.
-//! - **Plans share a gene pool, and a fast starter takes it over.** A crab
-//!   (six stiff legs in a ring) scored twice the skink's fitness after ten
-//!   generations, won all sixteen runs it shared with the skink, and then
-//!   stalled at half the fitness the skink reaches alone. A seal (two legs
-//!   with knees) won fifteen of sixteen such runs and ended them no better
-//!   than the former catalogue. So the plans are one family: every one grows
-//!   the same legs and trunk from the same rules, and a child of any two is
-//!   one of them.
+//! One rule, because a rule no body uses decays: mutation changes it freely
+//! while it shows nowhere, and by the time a body needs it it is broken. An
+//! earlier draft kept a rule of its own for a leg with a knee, and after 100
+//! generations that rule was broken in nearly every champion. Here the rule
+//! that grows a limb of several segments is the one every trunk uses, so a
+//! leg can always become such a limb.
+//!
+//! # What one mutation can grow
+//!
+//! The axiom works out how many segments each limb has, and one mutated
+//! constant can change the answer:
+//!
+//! - **A knee.** A leg has `round(segs)` segments, one to three, each
+//!   `leg / that` long. `segs` starts at 1.35; past 1.5 every leg is split
+//!   into two halves of its old length with a hinge between them, parallel
+//!   to the hip's, that turns `bend` either way. 2.8 percent of the
+//!   mutations of a body do it. (`bend` shows in no body until then, and
+//!   drifts meanwhile.)
+//! - **A pair of legs.** The trunk has `round(trunk / link)` segments, each
+//!   bearing a pair: 7.3 percent of the mutations of a body grow a third.
+//!
+//! Two things outside the plans let such a growth live. A fresh body is
+//! derived with a step more than it needs (see `INITIAL_LSYSTEM_ITERATIONS`),
+//! so what grew is whole at once. And a child takes each constant whole from
+//! one parent or the other (see `AgentGenotype::crossover`): averaged, as
+//! they once were, a count that had just passed a threshold fell back under
+//! it in the first child.
+//!
+//! What evolution makes of it, over sixteen runs of 100 generations on the
+//! flat floor and sixteen on rough ground: nothing yet. No champion had
+//! grown a third pair of legs (one in sixteen had with a draft whose joint
+//! ranges were not yet bounded), and none had a knee. Bred from a plan that
+//! starts with knees, fourteen runs in sixteen had dropped them, and the
+//! two that had not walked 2 and 4 m where the others walked 20. A leg
+//! split by a driven hinge is, with these brains, a worse leg. The grammar
+//! offers the growth; it cannot make it pay.
+//!
+//! A cross can grow too: a child of a skink and an eel that takes the one's
+//! `trunk` and the other's `link` has a trunk of three segments.
 //!
 //! # How a plan is written
 //!
@@ -38,156 +58,187 @@
 //! - **Every number evolution should tune is a constant the axiom names.**
 //!   The L-system copies a constant's value into the rules when it reads
 //!   them, so afterwards a mutated constant reaches the body only through
-//!   the axiom, which hands each one down as a module parameter. A constant
-//!   the axiom does not name is dead weight: of the eleven to twenty-one
-//!   each former plan defined, two to six still did anything. A given
-//!   constant changes in about one body mutation in seven, by up to a fifth.
-//! - **The axiom holds no legs and no trunk.** Mutation never edits the
-//!   axiom, so what is laid out there can never be added to or lost (the
-//!   scout's eye is the one thing that is). Legs and trunk segments come
-//!   from rules.
-//! - **Both legs of a pair come from one rule**, called once for each side,
-//!   so whatever mutation does to a leg it does to both. Rules that spell
-//!   out a left and a right leg drift apart, and a lopsided body walks in
-//!   circles. (A pair can still come apart: mutation may duplicate the leg
-//!   rule or edit one of the two calls.)
-//! - **Growth is a threshold on a constant.** The trunk gains a segment each
-//!   time `trunk / link` passes 2.5, 3.5 and so on, and each plan starts a
-//!   tenth below such a threshold. The new segment's legs need one more
-//!   derivation step than a fresh body gets; that count changes in one body
-//!   mutation in 33, up as often as down, and one step fewer leaves every
-//!   plan with four motors, which the lab does not score.
-//! - **Rules compute nothing but the trunk's count-down.** Mutation flips
-//!   `*` to `/`, `+` to `-` and `>` to `<` wherever a rule has one, so the
-//!   ratios the thresholds compare are worked out in the axiom. The one
-//!   subtraction left, flipped, makes a trunk that grows with every step.
+//!   the axiom, which hands each one down as a module parameter. That goes
+//!   for the joints' ranges too: a draft that wrote them into the axiom as
+//!   plain numbers, where nothing mutates, walked a quarter less far. A
+//!   given constant changes in about one body mutation in seven, by up to a
+//!   fifth.
+//! - **The axiom does the arithmetic and holds the bounds.** Mutation never
+//!   edits the axiom, and it flips `*` to `/`, `+` to `-` and `>` to `<`
+//!   wherever a rule has one, but leaves `min`, `max`, `round` and a unary
+//!   minus alone. So counts are rounded and clamped there, lengths divided
+//!   there, and the measures the physics cannot bear are bounded there: the
+//!   trunk no thinner than 0.3 m (thinner, it tears), a hip turning no
+//!   further than 0.75 rad either way (unbounded, 11 robots a generation
+//!   were culled late in a run; bounded, 6), the trunk's joints 1.2 rad. The one
+//!   subtraction left in a rule is the limb's count-down; flipped, every
+//!   limb grows a segment with every step and no leg ends in a foot (26
+//!   parts at five steps, 37 at six).
+//! - **A condition holds one comparison.** The L-system reads `a & b` and
+//!   writes it back as `a && b`, which it cannot read again, and the lab
+//!   stores bodies as written back. So "this limb is finished and is a leg"
+//!   is `max(n, k) <= 150`.
+//! - **The foot has a rule of its own symbol.** On the limb's symbol a
+//!   flipped comparison would let both rules match one module, and which
+//!   applied would be a draw from the body's seed. On its own, the flip
+//!   moves the sensors from the feet to the trunk and changes no part.
 //! - **No plan uses a turn and its opposite.** Mutation swaps `+` with `-`,
 //!   `&` with `^` and `\` with `/`, but only in a plan that contains both
 //!   of a pair. A flipped `-(90)` would grow every leg upward, so the plans
 //!   turn with `-`, `&` and `/` alone (`-(270)` where `+(90)` would read
-//!   better, and the leg's way back from its reach passed in as a second
-//!   side).
-//! - **Numbers that must hold are large, numbers that should drift are
-//!   small.** Mutation nudges a number in a rule by about 0.09 whatever its
-//!   size (each one in about one body mutation in seven): nothing to 90
-//!   degrees, a 4000 N m motor or a threshold of 150, a real change to a
-//!   joint's range in radians. It also sets a number, now and then, to the
-//!   first constant by name within 0.5 of it: here a joint range to the
-//!   trunk's radius.
-//! - **Bodies are thick for their legs.** The physics tears a body apart
-//!   when its trunk or head is light against the legs hanging from it, or
-//!   its legs thin against their motors: with a trunk radius of 0.25 m
-//!   instead of 0.3 a draft lost twelve robots a generation. These
-//!   proportions keep a full mutation of margin.
+//!   better, `&(-90)` for the way back from a leg's reach).
+//! - **Numbers that must hold are large.** Mutation nudges a number in a
+//!   rule by about 0.09 whatever its size: nothing to 90 degrees, a 4000 N m
+//!   motor, a threshold of 50 or the 1000 that marks a limb as no leg.
 //!
 //! `examples/bodyplans.rs` measures all of this for any plan, without or
-//! with physics.
+//! with physics, and `evolve --plans DIR` breeds from the plans of a folder
+//! in place of these.
 //!
 //! # The rules
 //!
-//! `G(s, t, a, b, w)` is a leg: out sideways by the reach `w` (a quarter
-//! turn `s` to the side, a quarter turn `t` back), then down, one stiff part
-//! of length `a` and radius `b` on a hip that swings fore and aft, ending in
-//! a touch sensor.
+//! `L(n, m, r, dl, dh, fl, fh, k, c, a, b, w, el, eh, gl, gh, k2)` is what
+//! is left of a limb: `n` hundredths of segments, each `m` long and `r` in
+//! radius, the next one on a hinge that turns `dl` one way and `dh` the
+//! other, those after it `fl` and `fh`. While `n` is above 50 the rule
+//! grows one segment. Before it, to either side and `w` out, it sets a side
+//! limb of `c` hundredths of segments `a` long and `b` in radius, on hinges
+//! of `el`, `eh` and then `gl`, `gh`, a limb of the kind `k2` whose own side
+//! limbs have no segments. After it, `Y`, and the limb's remainder.
 //!
-//! `T(n, m, r, a, b, w)` is the trunk, growing backward from the head: a leg
-//! pair, then a segment of length `m` and radius `r` on a hinge that turns it
-//! sideways. While `n` (a hundred times `trunk / link`) is above 150 another
-//! follows with `n` a hundred less; the last one is the tail.
+//! `Y(n, k)` is a foot in waiting: where the segment before it was the
+//! limb's last (`n` at most 150) and the limb is a leg (`k` at most 150:
+//! the axiom gives the trunk 1000 and its side limbs 0) it becomes a touch
+//! sensor.
+//!
+//! The turns before a side limb are the legs': out sideways (a quarter turn
+//! to the side, the reach, a quarter turn back), then down, so that the
+//! hinges swing fore and aft.
 
-/// The leg rule every plan shares.
-macro_rules! leg_rule {
+/// The parameters of the limb rule.
+macro_rules! limb {
     () => {
-        "G(s, t, a, b, w) -> &(s) f(w) &(t) -(90) /(90) Jl(-0.8, 0.8, 4000, 5) J K(a, b) St"
+        "L(n, m, r, dl, dh, fl, fh, k, c, a, b, w, el, eh, gl, gh, k2)"
     };
 }
 
-/// A leg pair: the same rule called for either side.
-macro_rules! leg_pair {
-    () => {
-        "[ G(90, -90, a, b, w) ] [ G(-90, 90, a, b, w) ]"
-    };
-}
-
-/// A trunk segment that is followed by another: a leg pair, the segment on
-/// its hinge, the rest of the trunk.
-macro_rules! trunk_rule {
-    () => {
+/// A side limb, a quarter turn `$out` to the side and `$back` again: a limb
+/// of the measures its parent was handed for its side limbs, whose own side
+/// limbs have no segments.
+macro_rules! side_limb {
+    ($out:literal, $back:literal) => {
         concat!(
-            "T(n, m, r, a, b, w) : n > 150 -> ",
-            leg_pair!(),
-            " Jl(-0.5, 0.5, 4000, 5) J K(m, r) T(n - 100, m, r, a, b, w)"
+            "[ &(",
+            $out,
+            ") f(w) &(",
+            $back,
+            ") -(90) /(90) L(c, a, b, el, eh, gl, gh, k2, 0, 0, 0, 0, 0, 0, 0, 0, 1000) ]"
         )
     };
 }
 
-/// The trunk's last leg pair and the tail behind it, on a hinge.
-macro_rules! tail_rule {
+/// The rule every limb grows by, a segment a step: its pair of side limbs,
+/// its hinge, the segment, the foot it may become, the rest of the limb.
+macro_rules! segment_rule {
     () => {
         concat!(
-            "T(n, m, r, a, b, w) : n <= 150 -> ",
-            leg_pair!(),
-            " Jl(-0.5, 0.5, 4000, 5) J K(m, r)"
+            limb!(),
+            " : n > 50 -> ",
+            side_limb!("90", "-90"),
+            " ",
+            side_limb!("-90", "90"),
+            " Jl(-dl, dh, 4000, 5) J K(m, r) Y(n, k)",
+            " L(n - 100, m, r, fl, fh, fl, fh, k, c, a, b, w, el, eh, gl, gh, k2)"
         )
     };
 }
 
-/// The same, with a tail that slides in and out along the trunk instead of
-/// turning: `Ja(0, 1, 0)` turns the joint's axis to the growth direction
-/// before `Jp` makes the joint prismatic.
-macro_rules! sliding_tail_rule {
+/// The foot: a touch sensor on the last segment of a leg.
+macro_rules! foot_rule {
     () => {
-        concat!(
-            "T(n, m, r, a, b, w) : n <= 150 -> ",
-            leg_pair!(),
-            " Ja(0, 1, 0) Jl(-0.2, 0.2, 1500, 5) Jp K(m, r)"
-        )
+        "Y(n, k) : max(n, k) <= 150 -> St"
+    };
+}
+
+/// How many segments a leg has: `segs` rounded, one to three.
+macro_rules! leg_segments {
+    () => {
+        "min(3, max(1, round(segs)))"
     };
 }
 
 /// What the axiom hands the trunk after the head: back to the head's centre,
-/// a quarter turn to lie level, then how many links the trunk spans (times a
-/// hundred), a link's length and radius, and the legs' length, radius and
-/// reach.
+/// a quarter turn to lie level, then the trunk as a limb (its segments, a
+/// segment's length and radius, its joints' ranges, 1000 for "no leg") and
+/// what its side limbs, the legs, are to be (their segments, a segment's
+/// length and radius, their reach, the hips' ranges and the knees', 0 for
+/// "a leg"). Counts, lengths and bounds are worked out here, where mutation
+/// does not reach.
 macro_rules! trunk_start {
     () => {
-        "f(0 - head) -(270) T(trunk / link * 100, link, girth, leg, shank, reach)"
+        concat!(
+            "f(0 - head) -(270) L(trunk / link * 100, link, max(girth, 0.3),",
+            " min(yawl, 1.2), min(yawr, 1.2), min(yawl, 1.2), min(yawr, 1.2), 1000, ",
+            leg_segments!(),
+            " * 100, leg / ",
+            leg_segments!(),
+            ", shank, reach, min(fore, 0.75), min(aft, 0.75), min(bend, 1), min(bend, 1), 0)"
+        )
+    };
+}
+
+/// The two rules every plan shares.
+macro_rules! rules {
+    () => {
+        concat!("\n", segment_rule!(), "\n", foot_rule!())
+    };
+}
+
+/// The joints' ranges every plan starts with (rad): the trunk's to either
+/// side, the hips' fore and aft, and a knee's, should a leg split.
+macro_rules! ranges {
+    () => {
+        "#define yawl 0.5\n\
+#define yawr 0.5\n\
+#define fore 0.7\n\
+#define aft 0.7\n\
+#define bend 0.1\n"
     };
 }
 
 /// The skink's measures, the scout's too: a trunk of 2.3 links, so that a
-/// tenth more of it brings a third segment.
+/// tenth more of it brings a third segment, and legs of 1.35 segments, so
+/// that a ninth more splits them.
 macro_rules! skink_constants {
     () => {
-        "#define head 0.52\n\
+        concat!(
+            "#define head 0.52\n\
 #define trunk 2.75\n\
 #define link 1.2\n\
 #define girth 0.36\n\
 #define leg 0.8\n\
+#define segs 1.35\n\
 #define shank 0.2\n\
-#define reach 0.8\n"
+#define reach 0.8\n",
+            ranges!()
+        )
     };
 }
 
 /// The names of the plans in [`MORPHOLOGY_POOL`], in its order.
 pub const PLAN_NAMES: &[&str] = &["Skink", "Scout", "Eel"];
 
-/// The body plans, as L-system sources, for the lab's starting three
-/// derivation steps.
+/// The body plans, as L-system sources, for the lab's starting five
+/// derivation steps (four build them; the fifth is in hand).
 pub const MORPHOLOGY_POOL: &[&str] = &[
     // -- Skink ---------------------------------------------------------
-    // A head, two pairs of stiff legs and a tail of two hinged segments:
+    // A head, two pairs of stiff legs and a tail: a trunk of two segments,
     // six motors.
     concat!(
         skink_constants!(),
         "omega: O(head) Si ",
         trunk_start!(),
-        "\n",
-        trunk_rule!(),
-        "\n",
-        tail_rule!(),
-        "\n",
-        leg_rule!()
+        rules!()
     ),
     // -- Scout ---------------------------------------------------------
     // The skink with an ultrasonic eye on a welded stalk, reaching out past
@@ -199,33 +250,27 @@ pub const MORPHOLOGY_POOL: &[&str] = &[
         skink_constants!(),
         "omega: O(head) Si [ Jf -(135) C(head * 2) -(270) Su ] ",
         trunk_start!(),
-        "\n",
-        trunk_rule!(),
-        "\n",
-        tail_rule!(),
-        "\n",
-        leg_rule!()
+        rules!()
     ),
     // -- Eel -----------------------------------------------------------
-    // A long trunk of short links on short legs, whose tail slides in and
-    // out instead of turning: seven motors, one of them the lab's slider.
-    // In three steps it grows two leg pairs on three segments; its third
-    // pair is laid down already and grows with a fourth step.
+    // A trunk of short links on short legs with a tail tip that slides in
+    // and out instead of turning: seven motors, one of them the lab's
+    // slider. The tip is set in the axiom, after the trunk (`Ja(0, 1, 0)`
+    // turns the joint's axis to the growth direction before `Jp` makes it
+    // prismatic), so like the scout's eye it cannot be lost.
     concat!(
         "#define head 0.5\n\
-#define trunk 2.6\n\
+#define trunk 1.9\n\
 #define link 0.8\n\
 #define girth 0.36\n\
 #define leg 0.7\n\
+#define segs 1.35\n\
 #define shank 0.2\n\
-#define reach 0.7\n\
-omega: O(head) Si ",
+#define reach 0.7\n",
+        ranges!(),
+        "omega: O(head) Si ",
         trunk_start!(),
-        "\n",
-        trunk_rule!(),
-        "\n",
-        sliding_tail_rule!(),
-        "\n",
-        leg_rule!()
+        " Ja(0, 1, 0) Jl(-0.2, 0.2, 1500, 5) Jp K(link, max(girth, 0.3))",
+        rules!()
     ),
 ];

@@ -3,7 +3,7 @@
 //! ```text
 //! cargo run --release --example bodyplans -- describe
 //! cargo run --release --example bodyplans -- mutate --samples 4000
-//! cargo run --release --example bodyplans -- culls --file examples/plans/crab.lsys
+//! cargo run --release --example bodyplans -- culls --file assets/morphologies/example_walker.lsys
 //! cargo run --release --example bodyplans -- halls --hall hall.json
 //! ```
 //!
@@ -18,12 +18,14 @@
 //!   only rules use changes nothing: the L-system copied its value into them
 //!   when it read them).
 //! - `shape` lists the parts and joints of each plan after `--steps`
-//!   derivation steps [the lab's starting 3], where they sit when the robot
+//!   derivation steps [the lab's starting 5], where they sit when the robot
 //!   spawns; with `--hall PATH`, of each hall's best robot instead.
 //! - `mutate` mutates each plan's body `--samples` times [2000], as breeding
 //!   does, and counts what came of it: nothing, the same body from a changed
 //!   source, a body of the same build with other measures, a body of another
-//!   build, or a body the lab cannot score.
+//!   build, or a body the lab cannot score; and what the bodies of another
+//!   build are (their parts, driven joints, feet and knees), commonest
+//!   first.
 //! - `walk` chains `--steps` mutations [40], keeping each body the lab can
 //!   score, `--walks` times [200]: how far unselected variation carries a
 //!   plan.
@@ -34,8 +36,9 @@
 //! - `gait` walks the best `--top` robots [1] of each hall of fame saved by
 //!   `evolve --save-hall` (`--hall PATH`, repeatable) once and prints the
 //!   factors of their fitness.
-//! - `halls` prints the bodies of each hall's best `--top` robots and the
-//!   plan each descends from.
+//! - `halls` prints the bodies of each hall's best `--top` robots (their
+//!   parts, driven joints, feet, legs and knees: the hinges that split a leg
+//!   ending in a foot) and the plan each descends from.
 
 use rand::SeedableRng;
 use rand_pcg::Pcg64;
@@ -90,6 +93,9 @@ struct Body {
     motors: usize,
     feet: usize,
     legs: usize,
+    /// Joints that split a leg: every hinge after the first on a leg that
+    /// ends in a foot (a part with a touch sensor).
+    knees: usize,
     mass: f32,
     length: f32,
     height: f32,
@@ -142,6 +148,24 @@ impl Body {
         let traits = BodyTraits::of(blueprint);
         let aabb = blueprint.aabb(spawn_rotation());
         let leg_of = legs(blueprint);
+        let mut hinges_on: BTreeMap<usize, usize> = BTreeMap::new();
+        for joint in &blueprint.joints {
+            if let (JointType::Hinge { .. }, Some(&leg)) =
+                (&joint.joint_type, leg_of.get(&joint.child_id))
+            {
+                *hinges_on.entry(leg).or_default() += 1;
+            }
+        }
+        let knees = blueprint
+            .modules
+            .iter()
+            .filter(|(_, module)| {
+                let touch = |s: &symbios_robot::SensorMount| s.sensor_type == SensorType::Touch;
+                module.sensors.iter().any(touch)
+            })
+            .filter_map(|(id, _)| leg_of.get(id))
+            .map(|leg| hinges_on.get(leg).copied().unwrap_or(0).saturating_sub(1))
+            .sum();
         Self {
             build,
             measures,
@@ -149,6 +173,7 @@ impl Body {
             motors: derived.num_outputs,
             feet: traits.feet,
             legs: leg_of.values().max().map_or(0, |&n| n + 1),
+            knees,
             mass: blueprint.modules.values().map(|m| m.mass).sum(),
             length: traits.length,
             height: aabb.max.y - aabb.min.y,
@@ -170,8 +195,15 @@ impl Body {
 
     fn summary(&self) -> String {
         format!(
-            "{:>3} parts {:>3} motors {:>2} feet {:>2} legs {:>6.1} kg {:>4.1} m long {:>4.1} m high",
-            self.parts, self.motors, self.feet, self.legs, self.mass, self.length, self.height
+            "{:>3} parts {:>3} motors {:>2} feet {:>2} legs {:>2} knees {:>6.1} kg {:>4.1} m long {:>4.1} m high",
+            self.parts,
+            self.motors,
+            self.feet,
+            self.legs,
+            self.knees,
+            self.mass,
+            self.length,
+            self.height
         )
     }
 }
@@ -310,6 +342,7 @@ fn mutate(plans: &[Plan], samples: usize) {
     for plan in plans {
         let mut rng = Pcg64::seed_from_u64(7);
         let mut counts: BTreeMap<Outcome, usize> = BTreeMap::new();
+        let mut builds: BTreeMap<(usize, usize, usize, usize), usize> = BTreeMap::new();
         let (mut d_parts, mut d_motors, mut d_feet, mut rebuilt) = (0.0, 0.0, 0.0, 0usize);
         for sample in 0..samples {
             let parent = genotype_of(plan, sample as u64 + 1, &mut rng);
@@ -325,6 +358,9 @@ fn mutate(plans: &[Plan], samples: usize) {
                 d_parts += after.parts as f32 - before.parts as f32;
                 d_motors += after.motors as f32 - before.motors as f32;
                 d_feet += after.feet as f32 - before.feet as f32;
+                *builds
+                    .entry((after.parts, after.motors, after.feet, after.knees))
+                    .or_default() += 1;
             }
         }
         let total: usize = counts.values().sum();
@@ -342,6 +378,23 @@ fn mutate(plans: &[Plan], samples: usize) {
             mean(d_motors),
             mean(d_feet),
         );
+        // What the rebuilt bodies are: the commonest builds, by their
+        // parts, driven joints, feet and knees.
+        let mut commonest: Vec<_> = builds.into_iter().collect();
+        commonest.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+        let listed: Vec<String> = commonest
+            .iter()
+            .take(6)
+            .map(|&((parts, motors, feet, knees), count)| {
+                format!(
+                    "{parts} parts {motors} motors {feet} feet {knees} knees {:.1}%",
+                    percent(count, total)
+                )
+            })
+            .collect();
+        if !listed.is_empty() {
+            println!("{:<12} rebuilt into: {}", "", listed.join(" | "));
+        }
     }
 }
 
@@ -696,7 +749,7 @@ fn change_of(line: &str) -> String {
         return format!("constant {name}");
     }
     let head = line.split("->").next().unwrap_or(line).trim();
-    // "0.93 : G(s, t) : q > 1" and "G(s, t) : q > 1" are the same rule.
+    // "0.93 : L(n, m) : n > 50" and "L(n, m) : n > 50" are the same rule.
     let rule = match head.split_once(" : ") {
         Some((before, after)) if before.parse::<f64>().is_ok() => after,
         _ => head,
@@ -740,7 +793,9 @@ fn halls(plans: &[Plan], paths: &[String], top: usize) -> Result<(), Box<dyn Err
     let mut founders: BTreeMap<&str, usize> = BTreeMap::new();
     let mut sums = [0.0f32; 8];
     let mut counted = 0usize;
-    println!("hall,rank,fitness,generation,plan,steps,parts,motors,feet,legs,mass,length,height");
+    println!(
+        "hall,rank,fitness,generation,plan,steps,parts,motors,feet,legs,knees,mass,length,height"
+    );
     for path in paths {
         let champions = Champion::all_from_json(&std::fs::read_to_string(path)?)
             .map_err(|err| format!("{path}: {err}"))?;
@@ -754,7 +809,7 @@ fn halls(plans: &[Plan], paths: &[String], top: usize) -> Result<(), Box<dyn Err
                 .map_or("another plan", String::as_str);
             *founders.entry(name).or_default() += 1;
             println!(
-                "{path},{rank},{:.3},{},{name},{},{},{},{},{},{:.1},{:.2},{:.2}",
+                "{path},{rank},{:.3},{},{name},{},{},{},{},{},{},{:.1},{:.2},{:.2}",
                 champion.fitness.unwrap_or(0.0),
                 champion.generation.unwrap_or(0),
                 genotype.lsystem_iterations,
@@ -762,6 +817,7 @@ fn halls(plans: &[Plan], paths: &[String], top: usize) -> Result<(), Box<dyn Err
                 body.motors,
                 body.feet,
                 body.legs,
+                body.knees,
                 body.mass,
                 body.length,
                 body.height,

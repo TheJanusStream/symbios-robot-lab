@@ -14,6 +14,7 @@
 use crate::core::config::LabConfig;
 use crate::core::descriptor::BodyTraits;
 use crate::core::genome::AgentGenotype;
+use crate::core::morphology_pool::RuntimeMorphologyPool;
 use crate::core::population::Population;
 use crate::simulation::SimulationPlugin;
 use crate::simulation::clock::GenerationClock;
@@ -142,6 +143,21 @@ impl HeadlessLab {
         self.app.world().resource::<HallOfFame>()
     }
 
+    /// Breeds from `plans` (a name and an L-system source each) in place of
+    /// the lab's own body plans: Generation 0 and every generation's fresh
+    /// robots are drawn from these and no others, whatever an earlier call
+    /// named. With no plans the lab's own are back. Call it before
+    /// [`Self::run`]: a run under way keeps the robots it has and draws
+    /// only its later fresh ones from `plans`.
+    pub fn breed_from(&mut self, plans: impl IntoIterator<Item = (String, String)>) {
+        let mut pool = self.app.world_mut().resource_mut::<RuntimeMorphologyPool>();
+        pool.clear();
+        for (name, source) in plans {
+            pool.upsert(name, source);
+        }
+        pool.stand_alone(true);
+    }
+
     /// Sends a robot into evolution: it joins the next run's first
     /// generation (or the next generation bred, mid-run).
     pub fn send_into_evolution(&mut self, genotype: AgentGenotype) {
@@ -171,6 +187,11 @@ impl HeadlessLab {
 ///
 /// The honest measure of a robot evolved under changing conditions: the
 /// score it was selected for came from one walk, and one walk can flatter.
+///
+/// What a condition's seed changes is the ground, the targets and the
+/// broken legs. On the flat floor with the forward task it changes
+/// nothing, so every condition repeats the same walks there: one per
+/// clone, from that clone's spot.
 pub fn fresh_scores(config: &LabConfig, genotype: &AgentGenotype, conditions: usize) -> Vec<f32> {
     condition_means(&fresh_walks(config, genotype, conditions))
 }

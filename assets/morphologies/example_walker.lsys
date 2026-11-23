@@ -6,9 +6,14 @@
 #define link 1.2
 #define girth 0.36
 #define leg 0.8
+#define segs 1.35
 #define shank 0.2
 #define reach 0.8
-omega: O(head) Si f(0 - head) -(270) T(trunk / link * 100, link, girth, leg, shank, reach)
-T(n, m, r, a, b, w) : n > 150 -> [ G(90, -90, a, b, w) ] [ G(-90, 90, a, b, w) ] Jl(-0.5, 0.5, 4000, 5) J K(m, r) T(n - 100, m, r, a, b, w)
-T(n, m, r, a, b, w) : n <= 150 -> [ G(90, -90, a, b, w) ] [ G(-90, 90, a, b, w) ] Jl(-0.5, 0.5, 4000, 5) J K(m, r)
-G(s, t, a, b, w) -> &(s) f(w) &(t) -(90) /(90) Jl(-0.8, 0.8, 4000, 5) J K(a, b) St
+#define yawl 0.5
+#define yawr 0.5
+#define fore 0.7
+#define aft 0.7
+#define bend 0.1
+omega: O(head) Si f(0 - head) -(270) L(trunk / link * 100, link, max(girth, 0.3), min(yawl, 1.2), min(yawr, 1.2), min(yawl, 1.2), min(yawr, 1.2), 1000, min(3, max(1, round(segs))) * 100, leg / min(3, max(1, round(segs))), shank, reach, min(fore, 0.75), min(aft, 0.75), min(bend, 1), min(bend, 1), 0)
+L(n, m, r, dl, dh, fl, fh, k, c, a, b, w, el, eh, gl, gh, k2) : n > 50 -> [ &(90) f(w) &(-90) -(90) /(90) L(c, a, b, el, eh, gl, gh, k2, 0, 0, 0, 0, 0, 0, 0, 0, 1000) ] [ &(-90) f(w) &(90) -(90) /(90) L(c, a, b, el, eh, gl, gh, k2, 0, 0, 0, 0, 0, 0, 0, 0, 1000) ] Jl(-dl, dh, 4000, 5) J K(m, r) Y(n, k) L(n - 100, m, r, fl, fh, fl, fh, k, c, a, b, w, el, eh, gl, gh, k2)
+Y(n, k) : max(n, k) <= 150 -> St

@@ -373,7 +373,7 @@ fn a_plans_axiom_names_every_constant() {
 
 /// Mutation flips `*` to `/` and `+` to `-` wherever a rule has one, so the
 /// plans work their ratios out in the axiom. The one operator a rule keeps
-/// is the trunk's count-down, whose flip grows a trunk segment per step.
+/// is the limb's count-down, whose flip grows every limb a segment per step.
 #[test]
 fn a_plans_rules_count_down_and_compute_nothing_else() {
     for (name, source) in plans() {
@@ -439,10 +439,11 @@ fn every_plan_is_the_same_on_both_sides() {
 }
 
 /// Growth is a threshold on a constant: a tenth more trunk (half of one
-/// constant mutation's reach) gives the skink another trunk segment, and a
-/// fourth step that segment's legs.
+/// constant mutation's reach) gives the skink a third trunk segment, and
+/// with the step a fresh body has in hand its pair of legs and their feet
+/// at once.
 #[test]
-fn a_longer_trunk_grows_a_segment_and_a_step_more_its_legs() {
+fn a_longer_trunk_grows_a_third_pair_of_legs_at_once() {
     let skink = MORPHOLOGY_POOL[0];
     let before = body(skink, INITIAL_LSYSTEM_ITERATIONS);
 
@@ -450,35 +451,264 @@ fn a_longer_trunk_grows_a_segment_and_a_step_more_its_legs() {
     let grown = body(&longer, INITIAL_LSYSTEM_ITERATIONS);
     assert_eq!(
         grown.num_outputs,
-        before.num_outputs + 1,
-        "one more trunk hinge"
+        before.num_outputs + 3,
+        "a trunk hinge and two hips"
     );
-    assert_eq!(
-        feet(&grown),
-        feet(&before),
-        "its legs wait for a fourth step"
-    );
-    let legged = body(&longer, INITIAL_LSYSTEM_ITERATIONS + 1);
-    assert_eq!(feet(&legged), feet(&before) + 2);
-    assert_eq!(legged.num_outputs, before.num_outputs + 3);
+    assert_eq!(feet(&grown), feet(&before) + 2);
+    assert_eq!(kneed_legs(&grown.blueprint), 0);
 
     // A tenth less changes nothing: the plan does not sit on a threshold.
     let shorter = body(
         &with_constant(skink, "trunk", 0.9),
         INITIAL_LSYSTEM_ITERATIONS,
     );
-    assert_eq!(shorter.num_outputs, before.num_outputs);
+    assert_eq!(build_of(&shorter), build_of(&before));
 }
 
-/// The eel's third leg pair is laid down in three steps and grows with a
-/// fourth.
+/// The lengths of the leg capsules of a body, a leg at a time: the parts
+/// from each foot up to the trunk.
+fn leg_lengths(derived: &DerivedBody) -> Vec<Vec<f32>> {
+    let bp = &derived.blueprint;
+    let leg_of = legs(bp);
+    let mut by_leg: std::collections::BTreeMap<usize, Vec<f32>> = Default::default();
+    let mut ids: Vec<_> = bp.modules.keys().copied().collect();
+    ids.sort_unstable();
+    for id in ids {
+        let (Some(&leg), Some(module)) = (leg_of.get(&id), bp.modules.get(&id)) else {
+            continue;
+        };
+        if let symbios_robot::ShapePrimitive::Capsule { height, .. } = module.shape {
+            by_leg.entry(leg).or_default().push(height);
+        }
+    }
+    let footed: std::collections::BTreeSet<usize> = bp
+        .modules
+        .iter()
+        .filter(|(_, m)| m.sensors.iter().any(|s| s.sensor_type == SensorType::Touch))
+        .filter_map(|(id, _)| leg_of.get(id).copied())
+        .collect();
+    by_leg
+        .into_iter()
+        .filter(|(leg, _)| footed.contains(leg))
+        .map(|(_, lengths)| lengths)
+        .collect()
+}
+
+/// The ranges (lowest, highest) of the hinges on the legs that end in a
+/// foot, hips first then knees, a leg at a time.
+fn leg_hinge_ranges(derived: &DerivedBody) -> Vec<Vec<(f32, f32)>> {
+    let bp = &derived.blueprint;
+    let leg_of = legs(bp);
+    let footed: std::collections::BTreeSet<usize> = bp
+        .modules
+        .iter()
+        .filter(|(_, m)| m.sensors.iter().any(|s| s.sensor_type == SensorType::Touch))
+        .filter_map(|(id, _)| leg_of.get(id).copied())
+        .collect();
+    let mut by_leg: std::collections::BTreeMap<usize, Vec<(f32, f32)>> = Default::default();
+    for joint in &bp.joints {
+        let Some(&leg) = leg_of.get(&joint.child_id) else {
+            continue;
+        };
+        if footed.contains(&leg)
+            && let Some(limit) = joint.limits.last()
+        {
+            by_leg.entry(leg).or_default().push((limit.min, limit.max));
+        }
+    }
+    by_leg.into_values().collect()
+}
+
+/// Whether every number of `got` is within a hundred-thousandth of `want`'s.
+fn close(got: &[f32], want: &[f32]) -> bool {
+    got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-5)
+}
+
+/// The ranges of the hinges on the trunk (the parts on the body's midline),
+/// lowest and highest.
+fn trunk_hinge_ranges(derived: &DerivedBody) -> Vec<(f32, f32)> {
+    let bp = &derived.blueprint;
+    bp.joints
+        .iter()
+        .filter(|joint| matches!(joint.joint_type, JointType::Hinge { .. }))
+        .filter(|joint| {
+            bp.modules
+                .get(&joint.child_id)
+                .is_some_and(|m| m.transform.0.z.abs() < 1e-3)
+        })
+        .filter_map(|joint| joint.limits.last().map(|limit| (limit.min, limit.max)))
+        .collect()
+}
+
+/// One mutated constant splits every leg: a tenth and a half more `segs`
+/// (within one constant mutation's reach) and each of the skink's four legs
+/// is two halves of its old length with a hinge between them, turning by
+/// `bend` either way. Nothing else changes, and the body is whole at once.
 #[test]
-fn a_fourth_step_grows_the_eels_third_leg_pair() {
-    let eel = MORPHOLOGY_POOL[2];
-    let before = body(eel, INITIAL_LSYSTEM_ITERATIONS);
-    let later = body(eel, INITIAL_LSYSTEM_ITERATIONS + 1);
-    assert_eq!(feet(&later), feet(&before) + 2);
-    assert_eq!(later.num_outputs, before.num_outputs + 2);
+fn one_constant_splits_every_leg_in_two() {
+    let skink = MORPHOLOGY_POOL[0];
+    let before = body(skink, INITIAL_LSYSTEM_ITERATIONS);
+    let stiff = leg_lengths(&before);
+    assert_eq!(stiff.len(), 4);
+    assert!(stiff.iter().all(|leg| close(leg, &[0.8])), "{stiff:?}");
+
+    let split = body(
+        &with_constant(skink, "segs", 1.15),
+        INITIAL_LSYSTEM_ITERATIONS,
+    );
+    let halves = leg_lengths(&split);
+    assert_eq!(halves.len(), 4);
+    assert!(
+        halves.iter().all(|leg| close(leg, &[0.4, 0.4])),
+        "{halves:?}"
+    );
+    assert_eq!(kneed_legs(&split.blueprint), 4);
+    assert_eq!(split.num_outputs, before.num_outputs + 4);
+    assert_eq!(feet(&split), feet(&before));
+    for ranges in leg_hinge_ranges(&split) {
+        assert_eq!(ranges.len(), 2, "a hip and a knee");
+        let (hip, knee) = (ranges[0], ranges[1]);
+        assert!(
+            (hip.0 + 0.7).abs() < 1e-5 && (hip.1 - 0.7).abs() < 1e-5,
+            "{hip:?}"
+        );
+        assert!(
+            (knee.0 + 0.1).abs() < 1e-5 && (knee.1 - 0.1).abs() < 1e-5,
+            "{knee:?}"
+        );
+    }
+    // The knee's range is a constant of its own.
+    let wider = with_constant(&with_constant(skink, "segs", 1.15), "bend", 4.0);
+    for ranges in leg_hinge_ranges(&body(&wider, INITIAL_LSYSTEM_ITERATIONS)) {
+        assert!((ranges[1].1 - 0.4).abs() < 1e-5, "{ranges:?}");
+    }
+
+    // A tenth less changes nothing; twice as much splits each leg in three,
+    // which takes the body one step more to finish.
+    let fewer = body(
+        &with_constant(skink, "segs", 0.9),
+        INITIAL_LSYSTEM_ITERATIONS,
+    );
+    assert_eq!(build_of(&fewer), build_of(&before));
+    let thrice = body(
+        &with_constant(skink, "segs", 2.0),
+        INITIAL_LSYSTEM_ITERATIONS + 1,
+    );
+    for lengths in leg_lengths(&thrice) {
+        assert_eq!(lengths.len(), 3);
+        assert!(
+            lengths.iter().all(|l| (l - 0.8 / 3.0).abs() < 1e-5),
+            "{lengths:?}"
+        );
+    }
+    assert_eq!(leg_lengths(&thrice).len(), 4);
+}
+
+/// The axiom bounds what the physics cannot bear and what a body could not
+/// finish: however far a constant drifts, the trunk is no thinner than
+/// 0.3 m, a hip turns no further than 0.75 rad either way, the trunk's
+/// joints 1.2 rad, a knee 1 rad, and a leg has three segments at most.
+#[test]
+fn the_axiom_bounds_what_a_constant_may_do() {
+    let skink = MORPHOLOGY_POOL[0];
+    let trunk_radii = |source: &str| -> Vec<f32> {
+        body(source, INITIAL_LSYSTEM_ITERATIONS)
+            .blueprint
+            .modules
+            .values()
+            .filter(|m| m.transform.0.z.abs() < 1e-3)
+            .filter_map(|m| match m.shape {
+                symbios_robot::ShapePrimitive::Capsule { radius, .. } => Some(radius),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(trunk_radii(skink).iter().all(|r| (r - 0.36).abs() < 1e-5));
+    let thin = with_constant(skink, "girth", 0.5);
+    assert!(trunk_radii(&thin).iter().all(|r| (r - 0.3).abs() < 1e-5));
+
+    let wide = with_constant(&with_constant(skink, "fore", 3.0), "aft", 3.0);
+    for ranges in leg_hinge_ranges(&body(&wide, INITIAL_LSYSTEM_ITERATIONS)) {
+        assert_eq!(ranges.len(), 1);
+        assert!(
+            close(&[ranges[0].0, ranges[0].1], &[-0.75, 0.75]),
+            "{ranges:?}"
+        );
+    }
+    let loose = with_constant(&with_constant(skink, "segs", 1.15), "bend", 30.0);
+    for ranges in leg_hinge_ranges(&body(&loose, INITIAL_LSYSTEM_ITERATIONS)) {
+        assert!(
+            close(&[ranges[1].0, ranges[1].1], &[-1.0, 1.0]),
+            "{ranges:?}"
+        );
+    }
+    let before = trunk_hinge_ranges(&body(skink, INITIAL_LSYSTEM_ITERATIONS));
+    assert_eq!(before.len(), 2);
+    assert!(
+        before.iter().all(|r| close(&[r.0, r.1], &[-0.5, 0.5])),
+        "{before:?}"
+    );
+    let bendy = with_constant(&with_constant(skink, "yawl", 5.0), "yawr", 4.0);
+    let after = trunk_hinge_ranges(&body(&bendy, INITIAL_LSYSTEM_ITERATIONS));
+    assert!(
+        after.iter().all(|r| close(&[r.0, r.1], &[-1.2, 1.2])),
+        "{after:?}"
+    );
+
+    // A leg has three segments at most, and one at least.
+    let many = with_constant(skink, "segs", 9.0);
+    let lengths = leg_lengths(&body(&many, INITIAL_LSYSTEM_ITERATIONS + 1));
+    assert_eq!(lengths.len(), 4);
+    assert!(lengths.iter().all(|leg| leg.len() == 3), "{lengths:?}");
+    let none = with_constant(skink, "segs", 0.1);
+    let lengths = leg_lengths(&body(&none, INITIAL_LSYSTEM_ITERATIONS));
+    assert_eq!(lengths.len(), 4);
+    assert!(lengths.iter().all(|leg| close(leg, &[0.8])), "{lengths:?}");
+}
+
+/// A fresh body has a step in hand: every plan is whole a step before the
+/// lab's starting count, and a step before that still lacks its hind feet's
+/// sensors (they arrive a step after the leg they end).
+#[test]
+fn every_plan_is_whole_a_step_before_the_lab_derives_it() {
+    for (name, source) in plans() {
+        let ours = body(source, INITIAL_LSYSTEM_ITERATIONS);
+        let earlier = body(source, INITIAL_LSYSTEM_ITERATIONS - 1);
+        assert_eq!(build_of(&earlier), build_of(&ours), "{name}");
+        let too_early = body(source, INITIAL_LSYSTEM_ITERATIONS - 2);
+        assert_eq!(too_early.num_outputs, ours.num_outputs, "{name}");
+        assert_eq!(feet(&too_early) + 2, feet(&ours), "{name}");
+    }
+}
+
+/// A condition holds one comparison: the L-system writes an AND back in a
+/// form it cannot read, and the lab stores bodies as written back.
+#[test]
+fn a_plans_conditions_hold_one_comparison() {
+    for (name, source) in plans() {
+        let system = System::from_source(source).expect("the plan parses");
+        for rule in system.rules.values().flatten() {
+            let ops = rule.condition.iter().flatten();
+            let comparisons = ops
+                .clone()
+                .filter(|op| matches!(op, Op::Gt | Op::Lt | Op::Ge | Op::Le | Op::Eq | Op::Ne))
+                .count();
+            assert_eq!(
+                comparisons, 1,
+                "{name}: a condition compares {comparisons} times"
+            );
+            assert!(
+                !ops.clone()
+                    .any(|op| matches!(op, Op::And | Op::Or | Op::Not)),
+                "{name}: a condition joins comparisons"
+            );
+        }
+        // And the plan is what the lab stores: written back and read again,
+        // it is the same text.
+        let stored = system.to_source();
+        let again = System::from_source(&stored).expect("the stored plan parses");
+        assert_eq!(again.to_source(), stored, "{name}");
+    }
 }
 
 /// The scout brings the lab's ultrasonic eye into the gene pool, on a stalk
@@ -534,8 +764,9 @@ fn the_scout_sees_and_the_eel_slides() {
 
 /// What breeding's body mutation makes of each plan, over 300 mutants: few
 /// are lost (no body, or too few motors to be scored) and a fair share come
-/// out with another build (measured: 4 percent lost, 10 to 13 rebuilt). Six
-/// of the former catalogue's eight walkers changed their build in under one
+/// out with another build (measured over 4000: 2 percent lost, 13 to 16
+/// rebuilt, of which 7 a third pair of legs and 3 a knee in every leg). Six
+/// of the first catalogue's eight walkers changed their build in under one
 /// mutant in a hundred.
 #[test]
 fn mutation_rebuilds_a_plan_without_losing_it() {
@@ -564,10 +795,9 @@ fn mutation_rebuilds_a_plan_without_losing_it() {
     }
 }
 
-/// Every plan grows the same legs and trunk from the same rules, so a child
-/// of any two plans is one of the family: a body the lab can score, on at
-/// least four stiff legs. (A plan whose legs had knees took over the gene
-/// pool it was tried in and held it at a third of the fitness.)
+/// Every plan grows its limbs by the same two rules, so a child of any two
+/// plans is one of the family: a body the lab can score, on at least four
+/// stiff legs.
 #[test]
 fn any_two_plans_cross_into_one_of_the_family() {
     let mut rng = Pcg64::seed_from_u64(13);
@@ -588,18 +818,29 @@ fn any_two_plans_cross_into_one_of_the_family() {
             }
         }
     }
-    // An eel's short links averaged into a skink's lengthen the child's
-    // trunk past its threshold: a third trunk segment.
-    let (skink, eel) = (
-        genotype(MORPHOLOGY_POOL[0], &mut rng),
-        genotype(MORPHOLOGY_POOL[2], &mut rng),
-    );
-    let child = scorable(&skink.body_child(&eel, 0.0, &mut rng)).expect("scorable");
-    let skink = scorable(&skink).expect("scorable");
-    assert_eq!(
-        child.blueprint.modules.len(),
-        skink.blueprint.modules.len() + 1
-    );
+}
+
+/// A child takes each constant whole from one parent or the other, so what
+/// a threshold grew is inherited or it is not: of the children of a skink
+/// whose legs have split and one whose legs have not, about half have four
+/// knees and the rest none. (Averaged, as constants once were, `segs` came
+/// out at 1.45 in every child and no child had a knee.)
+#[test]
+fn a_child_inherits_a_knee_whole_or_not_at_all() {
+    let mut rng = Pcg64::seed_from_u64(17);
+    let plain = genotype(MORPHOLOGY_POOL[0], &mut rng);
+    let split = genotype(&with_constant(MORPHOLOGY_POOL[0], "segs", 1.15), &mut rng);
+    let mut kneed = 0;
+    for pair in [(&split, &plain), (&plain, &split)] {
+        for _ in 0..40 {
+            let child = pair.0.body_child(pair.1, 0.0, &mut rng);
+            let grown = scorable(&child).expect("the child is scorable");
+            let knees = kneed_legs(&grown.blueprint);
+            assert!(knees == 0 || knees == 4, "{knees} knees");
+            kneed += usize::from(knees == 4);
+        }
+    }
+    assert!((25..=55).contains(&kneed), "{kneed} of 80 children kneed");
 }
 
 /// The plan the desktop app loads from `assets/morphologies/` joins the

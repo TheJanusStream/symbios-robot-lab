@@ -36,7 +36,7 @@ Evolution starts as soon as the window opens; **Restart evolution** starts over.
 cargo run --release --example evolve -- --generations 30 --seed 1
 ```
 
-One row per generation (best and mean fitness, the parent pool's best, the furthest robot, explosions, the pool's distinct bodies and its oldest body's age). Options: `--population`, `--duration`, `--algorithm simple|nsga2|map-elites|cvt|novelty|dns`, `--descriptor gait|body|body-gait`, `--terrain flat|rough|hilly`, `--task forward|target`, `--brain hyperneat|direct|supg`, `--mutation-rate`, `--parent-share F`, `--retests N` (8 by default; see [Breeding](#breeding)), `--vary-body-or-brain on|off`, `--protect-new-bodies on|off`, `--leg-damage on|off`, `--tilt on|off`, `--import PATH` (a saved robot joins the first generation; repeatable), `--save-best PATH` (the run's best robot as JSON), `--save-hall PATH` (the hall of fame as JSON), `--fresh N` (at the end, walk the hall's best four again under N fresh conditions: their scores may have been lucky), `--score PATH` (instead of evolving, score saved robots under fresh conditions; repeatable), `--walks PATH` (with `--fresh` or `--score`: every fresh walk as a CSV row, its score and what the score was made from, with the robot's mass, size, driven joints and feet, to judge robots by other measures than the fitness that bred them), `--csv PATH`. From code, `symbios_robot_lab::headless::HeadlessLab` runs the same loop.
+One row per generation (best and mean fitness, the parent pool's best, the furthest robot, explosions, the pool's distinct bodies and its oldest body's age). Options: `--population`, `--duration`, `--algorithm simple|nsga2|map-elites|cvt|novelty|dns`, `--descriptor gait|body|body-gait`, `--terrain flat|rough|hilly`, `--task forward|target`, `--brain hyperneat|direct|supg`, `--mutation-rate`, `--parent-share F`, `--retests N` (8 by default; see [Breeding](#breeding)), `--vary-body-or-brain on|off`, `--protect-new-bodies on|off`, `--leg-damage on|off`, `--tilt on|off`, `--plans DIR` (breed from the `.lsys` body plans of a folder in place of the lab's own), `--import PATH` (a saved robot joins the first generation; repeatable), `--save-best PATH` (the run's best robot as JSON), `--save-hall PATH` (the hall of fame as JSON), `--fresh N` (at the end, walk the hall's best four again under N fresh conditions, two clones each from spots of their own: their scores may have been lucky; on the flat floor with the forward task the conditions do not differ, so that is the same two walks whatever N), `--score PATH` (instead of evolving, score saved robots under fresh conditions; repeatable), `--walks PATH` (with `--fresh` or `--score`: every fresh walk as a CSV row, its score and what the score was made from, with the robot's mass, size, driven joints and feet, to judge robots by other measures than the fitness that bred them), `--csv PATH`. From code, `symbios_robot_lab::headless::HeadlessLab` runs the same loop.
 
 ### Web (WASM)
 
@@ -129,7 +129,7 @@ Measured over 16 seeds of 100 generations with each candidate, each run's best f
 | Recorded score kept under fresh conditions | 99% | 89% |
 | Robots culled per generation, flat and rough | 2.4 and 1.6 | 3.5 and 1.8 |
 
-The earlier formula's champions stride at their clock's 1 Hz on bodies grown large, and repeat a walk exactly; the present ones are light, stride faster, work harder and vary from walk to walk, which is why the best parents now walk again (see [Breeding](#breeding)). Three of the earlier 16 champions had grown a third pair of legs, none of the present ones on the flat floor and one on rough ground: nothing in the fitness pays for a leg that does not carry the robot further, and the plans' stiff legs do not. What the fitness no longer does is price out legs that could (see [Body plans](#body-plans)).
+The earlier formula's champions stride at their clock's 1 Hz on bodies grown large, and repeat a walk exactly; the present ones are light, stride faster, work harder and vary from walk to walk, which is why the best parents now walk again (see [Breeding](#breeding)). Three of the earlier 16 champions had grown a third pair of legs, none of the present ones on either ground: nothing in the fitness pays for a leg that does not carry the robot further, and the plans' stiff legs do not. What the fitness no longer does is price out legs that could (see [Body plans](#body-plans)).
 
 Scores quoted elsewhere in this README were measured with the earlier formula and compare only with one another.
 
@@ -146,6 +146,8 @@ Measured over 32 seeds (30 generations, NSGA-II keeping all 64 parents), the cha
 ### Breeding
 
 Every genotype carries its body (the L-system, its seed and derivation steps), its brain (the NEAT genome) and its clock's frequency. A child crosses its two parents and mutates the result, but by default only one half of it: half the children cross and mutate the bodies and keep the fitter parent's brain, the other half keep that parent's body and cross and mutate the brains. A new body is first tried with a brain that already walks, and a new brain on a body it was bred for. Measured over 32 seeds with NSGA-II, this beat changing both at once by +0.50 in the pool's best fitness at 30 generations (p = 0.05) and +0.64 at 100, and halved the robots the physics blew apart.
+
+A child's body takes each symbol's rules from one parent or the other, and each constant whole from one parent or the other. The L-system's own crossover averages the constants, and an average lies between its parents: a robot whose count had just passed a threshold (see [Body plans](#body-plans)), mated with one whose had not, had a child back under it, and every generation drew the population's measures toward their mean. Measured on the same body plans over 16 seeds of 100 generations, champions bred with whole constants walked 24.6 m and with averaged ones 20.0 m (+4.6, p = 0.01). They were also culled more often (6.8 robots a generation against 4.4), which bounding the joints' ranges in the plans brought back to 3.5.
 
 **Parents kept** (NSGA-II, SimpleGA, Dominated Novelty Search) is the share of a generation kept as parents: fewer breed from the best more often, more keep more kinds of body. **Parents walking again** clones the best parents by average score into the next generation, in children's places, and adds each new walk to their average, which the hall of fame shows with the walks behind it. Conditions change between generations (every robot walks from its own spot, and on new ground or toward new targets where asked), so one walk can flatter a robot. Measured under the lab's earlier fitness over 32 seeds with NSGA-II, each run's hall champions walking again as clones under 8 fresh conditions (the share of their recorded score they kept in brackets):
 
@@ -186,7 +188,7 @@ The best walking robot of every generation is offered to the hall, which keeps t
 - **copied** or **saved** as JSON: its genotype (body, brain, rhythm) with the fitness and generation it scored.
 - **bred**: it joins the next generation (or a restarted run's first) as a body new to that run.
 
-A robot's JSON (or a bare genotype, or a whole saved hall) or a share link can be imported by pasting it into the window, a JSON file by dropping it onto the window on the desktop, or with `--import` in headless runs. An imported robot must grow a body with driven joints, and a direct brain that does not fit its body or the task is resized. It enters the hall once, without the identity number it had where it came from.
+A robot's JSON (or a bare genotype, or a whole saved hall) or a share link can be imported by pasting it into the window, a JSON file by dropping it onto the window on the desktop, or with `--import` in headless runs. An imported robot must grow a body with driven joints and no more than 48 parts, and a direct brain that does not fit its body or the task is resized. It enters the hall once, without the identity number it had where it came from.
 
 A saved champion carries the number of the fitness formula that scored it. One scored by another formula than the lab's present one (a hall kept from an earlier version, say) comes back as an imported robot, without its score: the hall ranks by score, and scores of two formulas do not compare. Its body and brain are untouched; send it into evolution and it earns a score again.
 
@@ -210,27 +212,47 @@ Measured over 16 seeds of 30 generations, keeping all 64 parents (pool best fitn
 
 Generation 0 and each generation's fresh robots draw from three body plans (`src/core/presets.rs`), relatives of one simple body with one motor per leg:
 
-- the **Skink**: a head, two pairs of stiff legs and a tail of two hinged segments (six motors);
+- the **Skink**: a head, two pairs of stiff legs and a tail (a trunk of two segments, six motors);
 - the **Scout**: the skink with an ultrasonic eye on a stalk, watching the ground ahead;
-- the **Eel**: a long trunk of short links on short legs, whose tail slides in and out instead of turning (seven motors, one of them the lab's slider).
+- the **Eel**: a trunk of short links on short legs, with a tail tip that slides in and out instead of turning (seven motors, one of them the lab's slider).
 
-They are starting points for evolution, not finished walkers, and they are written for it:
+They are starting points for evolution, not finished walkers, and they are written for it. One rule grows every segment of every limb: the pair of side limbs the segment bears, the hinge it hangs on, the segment, and the rest of the limb. The trunk is a limb whose segments each bear a pair of legs; a leg is a limb whose own side limbs are told to have no segments. A rule no body uses decays under mutation until it is broken (an earlier draft's rule for a leg with a knee was, in nearly every champion, after 100 generations), and the rule that grows a limb of several segments is the one every trunk uses, so a leg can always become such a limb. A second rule gives the last segment of a leg its foot sensor.
 
-- every number evolution should tune is a constant the axiom names (the L-system copies constants into the rules as it reads them, so a constant only the rules use no longer reaches the body when it mutates);
-- legs and trunk segments come from rules, never from the axiom, which mutation cannot edit;
-- one rule grows both legs of a pair, so what mutation does to a leg it does to both;
-- the trunk gains a segment each time `trunk / link` passes 2.5, 3.5 and so on, each plan starts a tenth below such a threshold, and the new segment's legs grow with one more derivation step;
-- rules compute nothing but the trunk's count-down, since mutation flips `*` to `/` and `+` to `-` wherever it finds them, and no plan uses a turn together with its opposite, since mutation swaps those only where both occur;
-- the numbers that must hold (90 degrees, a threshold of 150) are too large for mutation's nudges to move.
+The axiom works out how many segments each limb has, so one mutated constant can change the answer:
 
-Measured under the lab's earlier fitness over 16 seeds of 100 generations, by each run's best four robots walking again under 8 fresh conditions: 10.84 against 3.89 for the former catalogue of eight hand-built walkers (+6.94 paired by seed), and on rough ground 7.69 against 2.92. In 3 of the 16 runs the best robot had grown a third or a fourth pair of legs on a longer trunk; nine of the former catalogue's 16 runs ended on a body cut down to five or six motors. As many robots are culled as before (2.4 per generation), most of them late in a run.
+- **a knee**: a leg has `round(segs)` segments, one to three, each `leg / that` long. `segs` starts at 1.35; past 1.5 every leg is split into two halves of its old length with a hinge between them, parallel to the hip's, that turns `bend` either way. 2.8 percent of the mutations of a body do it;
+- **a pair of legs**: the trunk has `round(trunk / link)` segments, each bearing a pair. 7.3 percent of the mutations of a body grow a third pair (9.2 for the eel).
 
-Two findings shaped the catalogue more than any grammar, both from trials with earlier drafts of these plans:
+What else the plans keep to:
 
-- **The fitness of the time paid for few motors.** A leg with a knee or a slider near its foot sensor is steered by that sensor in steps, and the tax the fitness then put on joint speed (see [Fitness](#fitness)) left such legs 3 to 8 percent of their distance. Bodies with one motor per leg learned to walk in a few generations, so the plans have stiff legs, and what evolution adds is legs and trunk. The present fitness no longer prices such legs out: bred alone for twelve generations, the drafts with kneed and with sliding legs score 5.9 and 6.1 where the plans score 8.2 (0.26 and 0.24 against 1.6 before), so they are worth another look.
-- **Plans share a gene pool, and a fast starter takes it over.** A crab on six stiff legs scored twice the skink's fitness after ten generations, won all 16 runs it shared with the skink, and ended them at 4.67. A seal on two legs with knees won 15 of 16 and ended at 3.48. So the plans are one family: any two cross into a body on the same stiff legs.
+- every number evolution should tune is a constant the axiom names, the joints' ranges among them (the L-system copies constants into the rules as it reads them, so a constant only the rules use no longer reaches the body when it mutates; a draft whose joint ranges sat in the axiom as plain numbers walked a quarter less far);
+- the axiom does the arithmetic and holds the bounds, since mutation never edits it and flips `*` to `/`, `+` to `-` and `>` to `<` in rules but leaves `min`, `max` and `round` alone: counts are rounded and clamped there, and what the physics cannot bear is bounded there (the trunk no thinner than 0.3 m, a hip turning no further than 0.75 rad either way, which brought the robots culled late in a run back from 11 a generation to 6);
+- a condition holds one comparison (the L-system writes an AND back in a form it cannot read again, and the lab stores bodies as written back), and no plan uses a turn together with its opposite, since mutation swaps those only where both occur;
+- the numbers that must hold (90 degrees, a threshold of 50) are too large for mutation's nudges to move.
 
-`cargo run --release --example bodyplans -- mutate` measures what breeding makes of each plan (or of any `.lsys` file given with `--file`): how many mutants keep their build, change it or are lost. Its other modes list a plan's parts and joints, cross plans, walk mutants to see which the physics culls, and print what a saved robot's fitness is made of. On the desktop, `assets/morphologies/example_walker.lsys` joins the three plans: a copy of the skink to edit.
+Three things outside the plans let what a mutation grows live: a fresh body is derived with a step more than it needs, so a new pair of legs or a knee is whole at once; a child takes each constant whole from one parent or the other (see [Breeding](#breeding)); and a body may have 48 parts at most, since a mutated rule can grow without end.
+
+**Measured**, over 16 seeds of 100 generations, each run's best four robots walking again under 8 fresh conditions, against the plans this catalogue replaced (the same three bodies, written with a rule for the trunk and one for the legs, their constants averaged in a child):
+
+| | former plans | these |
+| --- | --- | --- |
+| Flat floor, distance | 23.7 m | 25.8 m (+2.2, p = 0.40) |
+| Rough ground, distance | 23.7 m | 22.0 m (-1.7, p = 0.49) |
+| Robots culled per generation, flat and rough | 3.5 and 1.8 | 3.5 and 4.8 |
+| Champions' fresh walks ending in a broken robot, flat and rough | 3% and 2% | 5% and 8% (rough: p = 0.03) |
+| Champions on a third pair of legs | none of 16, on either ground | none of 16, on either ground |
+| Champions with a knee | (none possible) | none of 64, on either ground |
+
+So the catalogue walks as far as the former one, within what 16 runs can tell, and breaks more often on rough ground. It can grow by one mutation what the former needed two for (a pair of legs) or could not grow at all (a knee), and in 100 generations no champion had grown either: one in 16 grew the pair in a draft whose joint ranges were not yet bounded. Most of the distance comes from the breeding, not the grammar: bred with whole constants, the former plans walked 27.5 m on the flat floor (rough ground not run), so under the same breeding the new grammar walks about 2 m less.
+
+What a mutation grows is not kept where it does not pay, and knees do not: bred from a plan that starts with knees, 14 runs in 16 had dropped them after 100 generations, and the two that had not walked 2.3 m and 4.1 m where the others walked 20 m. A leg split by a driven hinge is, with these brains, a worse leg on the flat floor, and on rough ground no champion kept one either.
+
+Two findings from the first catalogue still stand:
+
+- **Plans share a gene pool, and a fast starter takes it over.** A crab on six stiff legs scored twice the skink's fitness after ten generations, won all 16 runs it shared with the skink, and ended them at under half the skink's score. So the plans are one family: any two cross into a body of the same kind.
+- **Judge a plan in the mix it ships in, over 100 generations.** `cargo run --release --example evolve -- --plans DIR` breeds from the `.lsys` files of a folder in place of the lab's plans.
+
+`cargo run --release --example bodyplans -- mutate` measures what breeding makes of each plan (or of any `.lsys` file given with `--file`): how many mutants keep their build, change it or are lost, and what the changed ones become. Its other modes list a plan's parts and joints, cross plans, walk mutants to see which the physics culls, and print what a saved robot's fitness is made of. On the desktop, `assets/morphologies/example_walker.lsys` joins the three plans: a copy of the skink to edit.
 
 ## Dependencies
 
