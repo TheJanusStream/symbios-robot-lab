@@ -306,7 +306,9 @@ struct JointSpec<'a> {
 
 /// Spawns the avian constraint for one blueprint joint. Hinges and sliders
 /// with a limit get its range and a motor whose torque or force is capped at
-/// the limit's effort; the brain sets the motor's targets every step.
+/// the limit's effort; the brain sets the motor's targets every step. A
+/// limit without effort (zero or less, or no number) gets its motor off:
+/// avian reads a motor's limit of 0 as "no limit".
 fn spawn_joint(commands: &mut Commands, spec: JointSpec) -> Entity {
     let JointSpec {
         parent,
@@ -328,6 +330,7 @@ fn spawn_joint(commands: &mut Commands, spec: JointSpec) -> Entity {
             if let Some(limit) = limit {
                 joint = joint.with_angle_limits(limit.min, limit.max);
                 joint.motor = AngularMotor::default().with_max_torque(limit.effort);
+                joint.motor.enabled = limit.effort > 0.0;
             }
             commands.spawn(joint).id()
         }
@@ -340,6 +343,7 @@ fn spawn_joint(commands: &mut Commands, spec: JointSpec) -> Entity {
             if let Some(limit) = limit {
                 joint = joint.with_limits(limit.min, limit.max);
                 joint.motor = LinearMotor::default().with_max_force(limit.effort);
+                joint.motor.enabled = limit.effort > 0.0;
             }
             commands.spawn(joint).id()
         }

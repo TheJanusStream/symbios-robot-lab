@@ -27,6 +27,15 @@ pub const MAX_PRISMATIC_VELOCITY: f32 = 1.5;
 /// The most force (N) any slider motor may exert; a joint whose blueprint
 /// limit gives a smaller effort is held to that.
 pub const MAX_PRISMATIC_FORCE: f32 = 5000.0;
+/// The most a motor may exert for a blueprint limit's `effort`: the effort,
+/// up to `cap`. An effort of zero or less, or one that is no number, is no
+/// motor at all: 0, which [`DrivenJoint::powered`] reads as "off". avian
+/// reads a motor's limit of 0 as "no limit", so handing such an effort on
+/// made the strongest motor of the weakest.
+pub fn motor_effort(effort: f32, cap: f32) -> f32 {
+    if effort > 0.0 { effort.min(cap) } else { 0.0 }
+}
+
 /// Evaluate brains every Nth fixed step; motors hold their last command in
 /// between. Sensors still read every step, so the IMU's finite differences
 /// stay one step long.
@@ -45,7 +54,8 @@ pub struct DrivenJoint {
     pub min: f32,
     /// Upper end of the joint's travel.
     pub max: f32,
-    /// The most its motor may exert (N·m for a hinge, N for a slider).
+    /// The most its motor may exert (N·m for a hinge, N for a slider): see
+    /// [`motor_effort`]. With 0 the joint has no motor.
     pub max_effort: f32,
     /// The leg it is on (see [`crate::simulation::body::legs`]), if any.
     pub leg: Option<usize>,
@@ -60,6 +70,13 @@ impl DrivenJoint {
     pub fn target(&self, output: f32) -> f32 {
         let t = (output.clamp(-1.0, 1.0) + 1.0) / 2.0;
         self.min + t * (self.max - self.min)
+    }
+
+    /// Whether its motor runs: the joint is whole and its motor has an
+    /// effort to exert. Otherwise the joint swings or slides freely within
+    /// its limits, whatever the brain commands.
+    pub fn powered(&self) -> bool {
+        !self.broken && self.max_effort > 0.0
     }
 }
 
@@ -302,11 +319,12 @@ impl RobotBrain {
 /// Position control: each output picks a target within its joint's range
 /// and avian's motor (a critically damped 5 Hz spring by default) servoes
 /// the joint there. Every driven joint's motor runs unless the joint is
-/// broken: avian makes joints with their motors off, and a hinge without a
-/// blueprint limit used to stay that way, a "motor" that never moved. The motor's velocity target stays 0. Driving the
-/// velocity target instead, as the lab once did, leaves that spring pulling
-/// every joint back to rest, so a full-speed command held a hinge only about
-/// 0.19 rad from it.
+/// broken or its motor has no effort ([`DrivenJoint::powered`]): avian
+/// makes joints with their motors off, and a hinge without a blueprint
+/// limit used to stay that way, a "motor" that never moved. The motor's
+/// velocity target stays 0. Driving the velocity target instead, as the lab
+/// once did, leaves that spring pulling every joint back to rest, so a
+/// full-speed command held a hinge only about 0.19 rad from it.
 pub fn drive_motors(
     mut brains: Query<&mut RobotBrain>,
     mut hinges: Query<&mut RevoluteJoint>,
@@ -353,7 +371,7 @@ pub fn drive_motors(
                 joint.motor.target_position = driven.target(output);
                 joint.motor.target_velocity = 0.0;
                 joint.motor.max_torque = driven.max_effort;
-                joint.motor.enabled = !driven.broken;
+                joint.motor.enabled = driven.powered();
             }
         }
         let slider_outputs = outputs.iter().skip(hinge_joints.len());
@@ -362,7 +380,7 @@ pub fn drive_motors(
                 joint.motor.target_position = driven.target(output);
                 joint.motor.target_velocity = 0.0;
                 joint.motor.max_force = driven.max_effort;
-                joint.motor.enabled = !driven.broken;
+                joint.motor.enabled = driven.powered();
             }
         }
     }

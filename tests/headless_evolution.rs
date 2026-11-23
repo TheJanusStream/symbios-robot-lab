@@ -2,15 +2,20 @@
 //! breeding together, as the windowed lab runs them.
 
 use bevy::math::Vec2;
+use rand::SeedableRng;
+use rand_pcg::Pcg64;
 use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
+use symbios_robot_lab::core::genome::AgentGenotype;
 use symbios_robot_lab::core::presets::{MORPHOLOGY_POOL, PLAN_NAMES};
 use symbios_robot_lab::headless::{
-    FRESH_CLONES, HeadlessLab, condition_means, fresh_scores, fresh_walks,
+    FRESH_CLONES, FRESH_SPOT_REACH, FreshSpots, HeadlessLab, condition_means, fresh_scores,
+    fresh_walks, fresh_walks_from,
 };
 use symbios_robot_lab::simulation::brain::RobotBrain;
 use symbios_robot_lab::simulation::hall_of_fame::{
     Entrant, LANE_SPACING, Lane, Showcase, ShowcaseRequest,
 };
+use symbios_robot_lab::simulation::hyperneat::fresh_cppn;
 use symbios_robot_lab::simulation::lifecycle::SpawnRequest;
 use symbios_robot_lab::simulation::lineage::{Lineage, RACE_LANES};
 use symbios_robot_lab::simulation::physics::GRAVITY;
@@ -391,6 +396,94 @@ fn fresh_scores_walk_a_robot_under_new_conditions() {
         scores,
         fresh_scores(&small_config(31), &champion.genotype, 3)
     );
+}
+
+/// A fresh condition sets its robots down somewhere else, within reach of
+/// where evolution's stood, and the same condition always on the same
+/// spots.
+#[test]
+fn a_fresh_condition_moves_the_spots() {
+    let shifts: Vec<Vec2> = (0..8).map(|k| FreshSpots::Moved.shift(k)).collect();
+    for (k, shift) in shifts.iter().enumerate() {
+        assert!(shift.abs().max_element() <= FRESH_SPOT_REACH, "{shift}");
+        assert_eq!(*shift, FreshSpots::Moved.shift(k as u64));
+        assert_eq!(FreshSpots::Same.shift(k as u64), Vec2::ZERO);
+        // No two conditions within a metre of each other.
+        for other in &shifts[..k] {
+            assert!(shift.distance(*other) > 1.0, "{shift} and {other}");
+        }
+    }
+}
+
+/// On the flat floor a fresh condition changes only where the robots
+/// start, and that makes it a condition of its own: a champion walks a
+/// different walk in each. Set down on the same spots, as fresh walks were
+/// before, every condition repeats the first, and eight conditions were
+/// two walks.
+#[test]
+fn every_fresh_condition_is_another_walk_on_the_flat_floor() {
+    let mut lab = HeadlessLab::new(small_config(31));
+    lab.run(3, |_| {}).expect("finishes");
+    let champion = lab.hall_of_fame().champions()[0].clone();
+    let config = small_config(31);
+    // Each condition's walks: how far each clone got.
+    let metres = |spots: FreshSpots| -> Vec<Vec<f32>> {
+        let walks = fresh_walks_from(&config, &champion.genotype, 3, spots);
+        (0..3)
+            .map(|k| {
+                let of_k = walks.iter().filter(|w| w.condition == k);
+                of_k.map(|w| w.trajectory.forward_displacement).collect()
+            })
+            .collect()
+    };
+    let same = metres(FreshSpots::Same);
+    assert_eq!(same[0].len(), FRESH_CLONES);
+    assert_eq!(same[1], same[0]);
+    assert_eq!(same[2], same[0]);
+
+    let moved = metres(FreshSpots::Moved);
+    assert_ne!(moved[0], moved[1]);
+    assert_ne!(moved[1], moved[2]);
+    assert_ne!(moved[0], moved[2]);
+    // Moved is what the fresh scores walk.
+    let walks = fresh_walks(&config, &champion.genotype, 3);
+    let first: Vec<f32> = walks
+        .iter()
+        .filter(|w| w.condition == 0)
+        .map(|w| w.trajectory.forward_displacement)
+        .collect();
+    assert_eq!(first, moved[0]);
+}
+
+/// A joint whose limit gives no effort has no motor. A skink whose joints
+/// are all so goes limp, and its motors do no work, where the same robot
+/// with its motors does. (The physics reads a motor's limit of 0 as "no
+/// limit": handed on, the 0 made every such joint an unlimited one.)
+#[test]
+fn a_joint_without_effort_has_no_motor() {
+    let skink = MORPHOLOGY_POOL[0];
+    assert!(skink.contains("Jl(-dl, dh, 4000, 5)"));
+    let strong = AgentGenotype::new(
+        skink.to_string(),
+        1,
+        BrainEncoding::HyperNeat,
+        fresh_cppn(&mut Pcg64::seed_from_u64(5)),
+    );
+    let mut limp = strong.clone();
+    limp.morphology = limp.morphology.replace("4000", "0");
+    assert_ne!(limp.morphology, strong.morphology);
+
+    let config = small_config(31);
+    let work = |genotype: &AgentGenotype| -> Vec<f32> {
+        let walks = fresh_walks(&config, genotype, 1);
+        assert_eq!(walks.len(), FRESH_CLONES);
+        assert!(walks.iter().all(|w| w.motors == 6 && !w.exploded));
+        walks.iter().map(|w| w.trajectory.mechanical_work).collect()
+    };
+    let with_motors = work(&strong);
+    assert!(with_motors.iter().all(|w| *w > 0.0), "{with_motors:?}");
+    let without = work(&limp);
+    assert!(without.iter().all(|w| *w == 0.0), "{without:?}");
 }
 
 /// A walk measures what the fitness and the economy objective are made of:

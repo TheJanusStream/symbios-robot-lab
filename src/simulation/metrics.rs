@@ -116,15 +116,16 @@ impl Turns {
 }
 
 /// Feeds each driven joint's command (hinges, then sliders, as the brain's
-/// outputs are ordered) to its turn counter. A broken joint's command moves
-/// nothing, so it is not counted while the joint is broken.
+/// outputs are ordered) to its turn counter. The command of a joint whose
+/// motor is off (broken, or without effort) moves nothing, so it is not
+/// counted meanwhile.
 pub fn count_command_turns<'a>(
     turns: &mut [Turns],
     joints: impl Iterator<Item = &'a DrivenJoint>,
     outputs: &[f32],
 ) {
     for ((turns, joint), &output) in turns.iter_mut().zip(joints).zip(outputs) {
-        if !joint.broken {
+        if joint.powered() {
             turns.feed(output);
         }
     }
@@ -775,26 +776,32 @@ mod tests {
         assert_eq!(flipping(0.1, 0.05), 0);
     }
 
-    /// A broken joint's command moves nothing and is not counted; the
-    /// others are, each on its own counter.
+    /// The command of a joint whose motor is off (broken, or without
+    /// effort) moves nothing and is not counted; the others are, each on
+    /// its own counter.
     #[test]
-    fn a_broken_joints_command_is_not_counted() {
-        let joint = |broken| DrivenJoint {
+    fn a_command_no_motor_carries_out_is_not_counted() {
+        let joint = |broken, max_effort| DrivenJoint {
             entity: Entity::PLACEHOLDER,
             min: -1.0,
             max: 1.0,
-            max_effort: 100.0,
+            max_effort,
             leg: None,
             broken,
         };
-        let joints = [joint(false), joint(true), joint(false)];
-        let mut turns = vec![Turns::default(); 3];
+        let joints = [
+            joint(false, 100.0),
+            joint(true, 100.0),
+            joint(false, 0.0),
+            joint(false, 100.0),
+        ];
+        let mut turns = vec![Turns::default(); 4];
         for step in 0..64 {
             let flip = if step % 2 == 0 { 0.5 } else { -0.5 };
-            count_command_turns(&mut turns, joints.iter(), &[flip, flip, 0.2]);
+            count_command_turns(&mut turns, joints.iter(), &[flip, flip, flip, 0.2]);
         }
         let counts: Vec<u32> = turns.iter().map(Turns::count).collect();
-        assert_eq!(counts, [62, 0, 0]);
+        assert_eq!(counts, [62, 0, 0, 0]);
     }
 
     /// The joint whose command turns most often sets the frequency; a joint

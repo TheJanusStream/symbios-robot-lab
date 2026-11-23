@@ -52,6 +52,7 @@ impl Plugin for SimulationPlugin {
             .init_resource::<clock::GenerationClock>()
             .init_resource::<RuntimeMorphologyPool>()
             .init_resource::<terrain::Ground>()
+            .init_resource::<spawn::SpawnShift>()
             .init_resource::<target::UserTarget>()
             .init_resource::<hall_of_fame::HallOfFame>()
             .init_resource::<hall_of_fame::Immigrants>()

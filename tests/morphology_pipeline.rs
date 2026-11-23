@@ -16,6 +16,7 @@ use symbios_robot_lab::simulation::body::legs;
 use symbios_robot_lab::simulation::generation::MIN_MOTORS;
 use symbios_robot_lab::simulation::hyperneat::fresh_cppn;
 use symbios_robot_lab::simulation::lifecycle::{DerivedBody, derive_blueprint};
+use symbios_robot_lab::simulation::spawn::spawn_rotation;
 
 /// The bodies the unit tests use too (`core::fixtures` is compiled for tests
 /// only, so this crate includes the file itself).
@@ -372,30 +373,25 @@ fn a_plans_axiom_names_every_constant() {
 }
 
 /// Mutation flips `*` to `/` and `+` to `-` wherever a rule has one, so the
-/// plans work their ratios out in the axiom. The one operator a rule keeps
-/// is the limb's count-down, whose flip grows every limb a segment per step.
+/// plans work their ratios out in the axiom and count a limb's segments
+/// down by square roots, which mutation leaves alone: no rule adds,
+/// subtracts, multiplies or divides. (A count-down that subtracted grew
+/// every limb a whole segment per step once its sign had flipped.)
 #[test]
-fn a_plans_rules_count_down_and_compute_nothing_else() {
+fn a_plans_rules_compute_nothing() {
     for (name, source) in plans() {
         let system = System::from_source(source).expect("the plan parses");
-        let mut sums = 0;
         for rule in system.rules.values().flatten() {
             let params = rule
                 .successors
                 .iter()
                 .flat_map(|m| m.params.iter().flatten());
-            let ops: Vec<&Op> = rule.condition.iter().flatten().chain(params).collect();
+            let mut ops = rule.condition.iter().flatten().chain(params);
             assert!(
-                !ops.iter()
-                    .any(|op| matches!(op, Op::Mul | Op::Div | Op::Pow)),
-                "{name}: a rule multiplies or divides"
+                !ops.any(|op| matches!(op, Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Pow)),
+                "{name}: a rule computes"
             );
-            sums += ops
-                .iter()
-                .filter(|op| matches!(op, Op::Add | Op::Sub))
-                .count();
         }
-        assert_eq!(sums, 1, "{name}: its rules add or subtract {sums} times");
     }
 }
 
@@ -468,6 +464,13 @@ fn a_longer_trunk_grows_a_third_pair_of_legs_at_once() {
 /// The lengths of the leg capsules of a body, a leg at a time: the parts
 /// from each foot up to the trunk.
 fn leg_lengths(derived: &DerivedBody) -> Vec<Vec<f32>> {
+    chain_lengths(derived, true)
+}
+
+/// The lengths of the capsules of a body's chains (see `legs`), a chain at
+/// a time: of those that carry a touch sensor, or of all of them, tails
+/// too.
+fn chain_lengths(derived: &DerivedBody, footed_only: bool) -> Vec<Vec<f32>> {
     let bp = &derived.blueprint;
     let leg_of = legs(bp);
     let mut by_leg: std::collections::BTreeMap<usize, Vec<f32>> = Default::default();
@@ -489,7 +492,7 @@ fn leg_lengths(derived: &DerivedBody) -> Vec<Vec<f32>> {
         .collect();
     by_leg
         .into_iter()
-        .filter(|(leg, _)| footed.contains(leg))
+        .filter(|(leg, _)| !footed_only || footed.contains(leg))
         .map(|(_, lengths)| lengths)
         .collect()
 }
@@ -543,7 +546,8 @@ fn trunk_hinge_ranges(derived: &DerivedBody) -> Vec<(f32, f32)> {
 /// One mutated constant splits every leg: a tenth and a half more `segs`
 /// (within one constant mutation's reach) and each of the skink's four legs
 /// is two halves of its old length with a hinge between them, turning by
-/// `bend` either way. Nothing else changes, and the body is whole at once.
+/// `bend` either way. The leg is as long as it was, so the body stands as
+/// high. Nothing else changes, and the body is whole at once.
 #[test]
 fn one_constant_splits_every_leg_in_two() {
     let skink = MORPHOLOGY_POOL[0];
@@ -561,6 +565,16 @@ fn one_constant_splits_every_leg_in_two() {
     assert!(
         halves.iter().all(|leg| close(leg, &[0.4, 0.4])),
         "{halves:?}"
+    );
+    let tall = |derived: &DerivedBody| {
+        let aabb = derived.blueprint.aabb(spawn_rotation());
+        aabb.max.y - aabb.min.y
+    };
+    assert!(
+        (tall(&split) - tall(&before)).abs() < 1e-5,
+        "{} m high, {} m before",
+        tall(&split),
+        tall(&before)
     );
     assert_eq!(kneed_legs(&split.blueprint), 4);
     assert_eq!(split.num_outputs, before.num_outputs + 4);
@@ -602,12 +616,14 @@ fn one_constant_splits_every_leg_in_two() {
         );
     }
     assert_eq!(leg_lengths(&thrice).len(), 4);
+    assert!((tall(&thrice) - tall(&before)).abs() < 1e-5);
 }
 
 /// The axiom bounds what the physics cannot bear and what a body could not
 /// finish: however far a constant drifts, the trunk is no thinner than
 /// 0.3 m, a hip turns no further than 0.75 rad either way, the trunk's
-/// joints 1.2 rad, a knee 1 rad, and a leg has three segments at most.
+/// joints 1.2 rad, a knee 1 rad, a leg has three segments at most and the
+/// trunk six.
 #[test]
 fn the_axiom_bounds_what_a_constant_may_do() {
     let skink = MORPHOLOGY_POOL[0];
@@ -664,6 +680,15 @@ fn the_axiom_bounds_what_a_constant_may_do() {
     let lengths = leg_lengths(&body(&none, INITIAL_LSYSTEM_ITERATIONS));
     assert_eq!(lengths.len(), 4);
     assert!(lengths.iter().all(|leg| close(leg, &[0.8])), "{lengths:?}");
+
+    // The trunk has six segments at most (the steps a body may be derived
+    // with), however many steps it gets, and one at least.
+    let long = with_constant(skink, "trunk", 9.0);
+    let trunk = trunk_hinge_ranges(&body(&long, 9));
+    assert_eq!(trunk.len(), 6);
+    let short = with_constant(skink, "trunk", 0.1);
+    let trunk = trunk_hinge_ranges(&body(&short, INITIAL_LSYSTEM_ITERATIONS));
+    assert_eq!(trunk.len(), 1);
 }
 
 /// A fresh body has a step in hand: every plan is whole a step before the
@@ -764,7 +789,7 @@ fn the_scout_sees_and_the_eel_slides() {
 
 /// What breeding's body mutation makes of each plan, over 300 mutants: few
 /// are lost (no body, or too few motors to be scored) and a fair share come
-/// out with another build (measured over 4000: 2 percent lost, 13 to 16
+/// out with another build (measured over 60 000: 2 percent lost, 12 to 15
 /// rebuilt, of which 7 a third pair of legs and 3 a knee in every leg). Six
 /// of the first catalogue's eight walkers changed their build in under one
 /// mutant in a hundred.
@@ -792,6 +817,167 @@ fn mutation_rebuilds_a_plan_without_losing_it() {
             rebuilt * 100 >= MUTANTS * 6,
             "{name}: only {rebuilt} of {MUTANTS} rebuilt"
         );
+    }
+}
+
+/// A leg gains parts only by splitting, and a split leg is as long as it
+/// was: among 3000 mutants of each plan hardly one has a chain of several
+/// parts, one its parent has no like of, that is longer than a leg may be
+/// (`leg`, which one mutation stretches by a fifth at most). The few there
+/// are come of a part mutation sets into a rule, or of two of a rule's
+/// modules swapped. A count-down these plans replaced, a subtraction, gave
+/// 1.5 percent of the mutants legs of two to four whole segments: its sign
+/// had flipped.
+#[test]
+fn no_mutation_lengthens_a_leg_by_adding_parts() {
+    const MUTANTS: usize = 3000;
+    /// One mutation scales a constant by up to a fifth.
+    const STRETCH: f32 = 1.25;
+    let long = |chain: &[f32]| chain.iter().sum::<f32>();
+    for (name, source) in plans() {
+        let mut rng = Pcg64::seed_from_u64(11);
+        let parent = genotype(source, &mut rng);
+        let before = scorable(&parent).expect("the plan is scorable");
+        let longest_leg = leg_lengths(&before)
+            .iter()
+            .map(|leg| long(leg))
+            .fold(0.0, f32::max);
+        let mut lengthened = 0;
+        for _ in 0..MUTANTS {
+            let mut child = parent.clone();
+            child.mutate_body(&mut rng, 0.3);
+            let Some(after) = scorable(&child) else {
+                continue;
+            };
+            // Each of the parent's chains stands for one of the child's: a
+            // tail a longer trunk carries along is no leg that grew, but a
+            // leg grown to the tail's measures is.
+            let mut had = chain_lengths(&before, false);
+            let grew = chain_lengths(&after, false).iter().any(|chain| {
+                let like = had.iter().position(|theirs| {
+                    theirs.len() == chain.len()
+                        && long(chain) <= STRETCH * long(theirs)
+                        && long(theirs) <= STRETCH * long(chain)
+                });
+                match like {
+                    Some(found) => {
+                        had.swap_remove(found);
+                        false
+                    }
+                    None => chain.len() > 1 && long(chain) > STRETCH * longest_leg,
+                }
+            });
+            lengthened += usize::from(grew);
+        }
+        assert!(
+            lengthened * 1000 <= MUTANTS,
+            "{name}: {lengthened} of {MUTANTS} mutants have a leg more parts made longer"
+        );
+    }
+}
+
+/// Nothing wakes a finished limb. Mutation copies rules and flips
+/// comparisons, and a copy of the limb rule that grows where `n < z` once
+/// matched every finished limb and every limb told to have no segments: a
+/// skink of 41 parts at four steps, of more than the lab takes at five. A
+/// finished limb's count is the end mark itself, which is neither above it
+/// nor below, so with such a copy each plan is the body it was, split legs
+/// and all. The condition holds no number mutation could nudge.
+#[test]
+fn a_flipped_copy_of_the_limb_rule_wakes_no_finished_limb() {
+    for (name, source) in plans() {
+        let rule = source
+            .lines()
+            .find(|line| line.starts_with("G("))
+            .expect("the limb rule");
+        assert!(rule.contains(" : n > z -> "), "{name}: {rule}");
+        let copies = format!(
+            "0.5 : {rule}\n0.5 : {}",
+            rule.replace(" : n > z -> ", " : n < z -> ")
+        );
+        let flipped = source.replace(rule, &copies);
+        for plan in [flipped.clone(), with_constant(&flipped, "segs", 1.15)] {
+            let ours = if plan == flipped {
+                source.to_string()
+            } else {
+                with_constant(source, "segs", 1.15)
+            };
+            for steps in 3..=INITIAL_LSYSTEM_ITERATIONS + 1 {
+                assert_eq!(
+                    build_of(&body(&plan, steps)),
+                    build_of(&body(&ours, steps)),
+                    "{name} at {steps} steps"
+                );
+            }
+        }
+
+        let system = System::from_source(source).expect("the plan parses");
+        let limb = system.interner.resolve_id("G").expect("the limb's symbol");
+        for rule in &system.rules[&limb] {
+            let condition = rule.condition.as_ref().expect("a condition");
+            assert!(
+                !condition.iter().any(|op| matches!(op, Op::Push(_))),
+                "{name}: the limb rule's condition holds a number"
+            );
+        }
+    }
+}
+
+/// The skink as it was written while limbs counted in hundredths, under the
+/// rule names `L` and `Y`: a robot kept from then is of this kind.
+const FORMER_SKINK: &str = "#define head 0.52\n\
+#define trunk 2.75\n\
+#define link 1.2\n\
+#define girth 0.36\n\
+#define leg 0.8\n\
+#define segs 1.35\n\
+#define shank 0.2\n\
+#define reach 0.8\n\
+#define yawl 0.5\n\
+#define yawr 0.5\n\
+#define fore 0.7\n\
+#define aft 0.7\n\
+#define bend 0.1\n\
+omega: O(head) Si f(0 - head) -(270) L(trunk / link * 100, link, max(girth, 0.3), \
+min(yawl, 1.2), min(yawr, 1.2), min(yawl, 1.2), min(yawr, 1.2), 1000, \
+min(3, max(1, round(segs))) * 100, leg / min(3, max(1, round(segs))), shank, reach, \
+min(fore, 0.75), min(aft, 0.75), min(bend, 1), min(bend, 1), 0)\n\
+L(n, m, r, dl, dh, fl, fh, k, c, a, b, w, el, eh, gl, gh, k2) : n > 50 -> \
+[ &(90) f(w) &(-90) -(90) /(90) L(c, a, b, el, eh, gl, gh, k2, 0, 0, 0, 0, 0, 0, 0, 0, 1000) ] \
+[ &(-90) f(w) &(90) -(90) /(90) L(c, a, b, el, eh, gl, gh, k2, 0, 0, 0, 0, 0, 0, 0, 0, 1000) ] \
+Jl(-dl, dh, 4000, 5) J K(m, r) Y(n, k) \
+L(n - 100, m, r, fl, fh, fl, fh, k, c, a, b, w, el, eh, gl, gh, k2)\n\
+Y(n, k) : max(n, k) <= 150 -> St";
+
+/// A robot kept from before the rules were renamed still breeds with these
+/// plans. A child takes each rule from one parent or the other by its
+/// symbol, and the two grammars count differently: under one name, half the
+/// children would pair an axiom with a rule that cannot read its counts.
+/// Under names of their own each child is a whole skink, of its first
+/// parent's kind, with the other's rules riding along unused.
+#[test]
+fn a_robot_kept_from_before_breeds_with_these_plans() {
+    let mut rng = Pcg64::seed_from_u64(19);
+    let ours = genotype(MORPHOLOGY_POOL[0], &mut rng);
+    let former = genotype(FORMER_SKINK, &mut rng);
+    let skink = build_of(&scorable(&ours).expect("the skink is scorable"));
+    assert_eq!(
+        build_of(&scorable(&former).expect("the former skink is scorable")),
+        skink
+    );
+    for (first, second) in [(&ours, &former), (&former, &ours)] {
+        for _ in 0..20 {
+            let child = first.body_child(second, 0.0, &mut rng);
+            let grown = scorable(&child).expect("the child is scorable");
+            assert_eq!(build_of(&grown), skink);
+            let kind = if std::ptr::eq(first, &ours) {
+                "G("
+            } else {
+                "L("
+            };
+            let axiom = child.morphology.lines().find(|l| l.starts_with("omega"));
+            assert!(axiom.is_some_and(|axiom| axiom.contains(kind)), "{axiom:?}");
+        }
     }
 }
 

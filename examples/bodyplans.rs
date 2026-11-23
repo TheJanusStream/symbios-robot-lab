@@ -23,9 +23,11 @@
 //! - `mutate` mutates each plan's body `--samples` times [2000], as breeding
 //!   does, and counts what came of it: nothing, the same body from a changed
 //!   source, a body of the same build with other measures, a body of another
-//!   build, or a body the lab cannot score; and what the bodies of another
+//!   build, or a body the lab cannot score; what the bodies of another
 //!   build are (their parts, driven joints, feet and knees), commonest
-//!   first.
+//!   first; and how many mutants have a leg of more parts than the plan's,
+//!   as long as before (a leg split) or longer by them, with what the
+//!   mutation rewrote in the rules of those.
 //! - `walk` chains `--steps` mutations [40], keeping each body the lab can
 //!   score, `--walks` times [200]: how far unselected variation carries a
 //!   plan.
@@ -96,6 +98,11 @@ struct Body {
     /// Joints that split a leg: every hinge after the first on a leg that
     /// ends in a foot (a part with a touch sensor).
     knees: usize,
+    /// Each leg's parts, its length from its first joint to the centre of
+    /// its last part's rounded end (the lengths of its parts, summed) and
+    /// whether it carries a touch sensor somewhere (a tail does not), in leg
+    /// order.
+    limbs: Vec<(usize, f32, bool)>,
     mass: f32,
     length: f32,
     height: f32,
@@ -166,9 +173,29 @@ impl Body {
             .filter_map(|(id, _)| leg_of.get(id))
             .map(|leg| hinges_on.get(leg).copied().unwrap_or(0).saturating_sub(1))
             .sum();
+        let mut limbs: BTreeMap<usize, (usize, f32, bool)> = BTreeMap::new();
+        for (id, module) in &blueprint.modules {
+            let Some(&leg) = leg_of.get(id) else {
+                continue;
+            };
+            let long = match module.shape {
+                ShapePrimitive::Box(half) => half.y * 2.0,
+                ShapePrimitive::Cylinder { height, .. }
+                | ShapePrimitive::Capsule { height, .. } => height,
+                ShapePrimitive::Sphere(_) => 0.0,
+            };
+            let limb = limbs.entry(leg).or_default();
+            limb.0 += 1;
+            limb.1 += long;
+            limb.2 |= module
+                .sensors
+                .iter()
+                .any(|s| s.sensor_type == SensorType::Touch);
+        }
         Self {
             build,
             measures,
+            limbs: limbs.into_values().collect(),
             parts: blueprint.modules.len(),
             motors: derived.num_outputs,
             feet: traits.feet,
@@ -262,6 +289,56 @@ fn outcome(
     (kind, Some(after))
 }
 
+/// How much longer a leg of more parts must be than the parent's longest
+/// before it counts as lengthened: one mutation scales a constant by up to a
+/// fifth, so a split leg stays under this and a leg with a whole part more
+/// does not.
+const LENGTHENED: f32 = 1.25;
+
+/// Whether mutation gave a body a chain of more parts than its parent's
+/// legs have (the sensing ones: a tail is no leg), and whether that chain
+/// is longer than they are.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum LegGrowth {
+    /// A leg of more parts and about the old length: a leg split.
+    Split,
+    /// A leg of more parts that is longer by them.
+    Lengthened,
+}
+
+fn leg_growth(before: &Body, after: &Body) -> Option<LegGrowth> {
+    // A body of no more parts grew nothing.
+    if after.parts <= before.parts {
+        return None;
+    }
+    let legs = before.limbs.iter().filter(|&&(_, _, senses)| senses);
+    let most = legs.clone().map(|&(parts, _, _)| parts).max()?;
+    let longest = legs.map(|&(_, long, _)| long).fold(0.0, f32::max);
+    // A chain the parent had too is not a leg that grew: a longer trunk
+    // carries the eel's tail along, and a mutation that moves the sensors
+    // makes a sensing leg of it. Each of the parent's chains stands for one
+    // of the child's, so a leg grown to a tail's measures is still counted.
+    let mut had: Vec<(usize, f32)> = before.limbs.iter().map(|&(p, l, _)| (p, l)).collect();
+    let mut grown = Vec::new();
+    for &(parts, long, _) in &after.limbs {
+        let like = had.iter().position(|&(theirs, as_long)| {
+            theirs == parts && long <= LENGTHENED * as_long && as_long <= LENGTHENED * long
+        });
+        match like {
+            Some(found) => {
+                had.swap_remove(found);
+            }
+            None if parts > most => grown.push(long),
+            None => {}
+        }
+    }
+    if grown.iter().any(|&long| long > LENGTHENED * longest) {
+        Some(LegGrowth::Lengthened)
+    } else {
+        grown.first().map(|_| LegGrowth::Split)
+    }
+}
+
 fn percent(count: usize, of: usize) -> f32 {
     100.0 * count as f32 / of.max(1) as f32
 }
@@ -344,6 +421,8 @@ fn mutate(plans: &[Plan], samples: usize) {
         let mut counts: BTreeMap<Outcome, usize> = BTreeMap::new();
         let mut builds: BTreeMap<(usize, usize, usize, usize), usize> = BTreeMap::new();
         let (mut d_parts, mut d_motors, mut d_feet, mut rebuilt) = (0.0, 0.0, 0.0, 0usize);
+        let mut growths: BTreeMap<LegGrowth, usize> = BTreeMap::new();
+        let mut lengthened_by: BTreeMap<String, usize> = BTreeMap::new();
         for sample in 0..samples {
             let parent = genotype_of(plan, sample as u64 + 1, &mut rng);
             let Some(before) = body_of(&parent) else {
@@ -361,6 +440,13 @@ fn mutate(plans: &[Plan], samples: usize) {
                 *builds
                     .entry((after.parts, after.motors, after.feet, after.knees))
                     .or_default() += 1;
+                if let Some(growth) = leg_growth(&before, &after) {
+                    *growths.entry(growth).or_default() += 1;
+                    if growth == LegGrowth::Lengthened {
+                        let rewritten = rewrites(&parent.morphology, &child.morphology);
+                        *lengthened_by.entry(rewritten).or_default() += 1;
+                    }
+                }
             }
         }
         let total: usize = counts.values().sum();
@@ -394,6 +480,20 @@ fn mutate(plans: &[Plan], samples: usize) {
             .collect();
         if !listed.is_empty() {
             println!("{:<12} rebuilt into: {}", "", listed.join(" | "));
+        }
+        // Legs that gained parts: split (as long as before) or lengthened.
+        let grew = |growth| growths.get(&growth).copied().unwrap_or(0);
+        let (split, longer) = (grew(LegGrowth::Split), grew(LegGrowth::Lengthened));
+        println!(
+            "{:<12} a leg of more parts: as long as before {:.2}% ({split}), longer {:.2}% ({longer})",
+            "",
+            percent(split, total),
+            percent(longer, total),
+        );
+        let mut by: Vec<_> = lengthened_by.into_iter().collect();
+        by.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+        for (rewritten, count) in by.iter().take(6) {
+            println!("{:<12}   longer ({count}) where a rule has {rewritten}", "");
         }
     }
 }
@@ -749,12 +849,88 @@ fn change_of(line: &str) -> String {
         return format!("constant {name}");
     }
     let head = line.split("->").next().unwrap_or(line).trim();
-    // "0.93 : L(n, m) : n > 50" and "L(n, m) : n > 50" are the same rule.
+    // "0.93 : G(n, z) : n > z" and "G(n, z) : n > z" are the same rule.
     let rule = match head.split_once(" : ") {
         Some((before, after)) if before.parse::<f64>().is_ok() => after,
         _ => head,
     };
     format!("rule {rule}")
+}
+
+/// A rule with its numbers blanked and without the probability mutation may
+/// have written before it: what is left when mutation only nudged numbers.
+fn shape_of(line: &str) -> String {
+    let rule = match line.split_once(" : ") {
+        Some((before, after)) if before.trim().parse::<f64>().is_ok() => after,
+        _ => line,
+    };
+    let mut shape = String::new();
+    let mut chars = rule.chars().peekable();
+    let mut last = ' ';
+    while let Some(c) = chars.next() {
+        // A minus sign belongs to a number when it follows a bracket or a
+        // comma: "&(-90)", but not "f(0 - head)" or "-dl".
+        let signs = c == '-'
+            && matches!(last, '(' | ' ')
+            && chars.peek().is_some_and(char::is_ascii_digit)
+            && !shape.ends_with("# ");
+        if c.is_ascii_digit() || signs {
+            while chars
+                .peek()
+                .is_some_and(|d| d.is_ascii_digit() || matches!(d, '.' | 'e' | 'E'))
+            {
+                chars.next();
+            }
+            shape.push('#');
+            last = '#';
+        } else {
+            shape.push(c);
+            last = c;
+        }
+    }
+    shape
+}
+
+/// How `after`'s rules were rewritten beyond their numbers: for each rule
+/// whose shape `before` lacks, the modules that differ from the rule of
+/// `before` it sets out like, between the first and the last that do.
+fn rewrites(before: &str, after: &str) -> String {
+    let rules = |source: &str| -> Vec<String> {
+        let lines = source.lines().filter(|line| line.contains("->"));
+        lines.map(shape_of).collect()
+    };
+    let known = rules(before);
+    let mut found = Vec::new();
+    for rule in rules(after) {
+        if known.contains(&rule) {
+            continue;
+        }
+        let ours: Vec<&str> = rule.split(' ').collect();
+        // The rule of `before` that shares the most modules from the start.
+        let shared =
+            |theirs: &Vec<&str>| ours.iter().zip(theirs).take_while(|(a, b)| a == b).count();
+        let all: Vec<Vec<&str>> = known.iter().map(|k| k.split(' ').collect()).collect();
+        let Some(theirs) = all.iter().max_by_key(|theirs| shared(theirs)) else {
+            continue;
+        };
+        let start = shared(theirs);
+        let end = ours[start..]
+            .iter()
+            .rev()
+            .zip(theirs[start..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let (new, old) = (
+            ours[start..ours.len() - end].join(" "),
+            theirs[start..theirs.len() - end].join(" "),
+        );
+        found.push(format!("`{new}` for `{old}`"));
+    }
+    if found.is_empty() {
+        "only numbers changed".to_string()
+    } else {
+        found.join(" and ")
+    }
 }
 
 /// The lines of `after` that `before` lacks.

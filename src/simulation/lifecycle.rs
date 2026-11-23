@@ -41,9 +41,12 @@ pub struct DerivedBody {
 
 /// The most parts a body may have. A mutation can make a grammar grow
 /// without end: a duplicated rule whose comparison then flips matches the
-/// modules that were meant to stay inert, and the body plans' skink had 99
-/// parts at five derivation steps and 289 at six. The plans' own growth
-/// stays far below (three leg pairs with a knee each: 16 parts).
+/// modules that were meant to stay inert, and the body plans' skink once
+/// had 99 parts at five derivation steps and 289 at six. The plans now end
+/// their limbs on a number no flipped comparison matches (see
+/// `core::presets`), but a plan dropped into the lab, or a robot kept from
+/// before, may not. The plans' own growth stays below the cap (six leg
+/// pairs with two knees each: 43 parts).
 pub const MAX_BODY_PARTS: usize = 48;
 
 /// Derives `morphology` with `seed` for `iterations` steps and builds its

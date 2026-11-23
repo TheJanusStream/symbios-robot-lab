@@ -9,7 +9,7 @@ use crate::core::population::Population;
 use crate::simulation::body::{SpawnedBody, SpawnedJoint, legs, spawn_body};
 use crate::simulation::brain::{
     DEFAULT_HINGE_RANGE, DEFAULT_SLIDER_RANGE, DrivenJoint, MAX_MOTOR_TORQUE, MAX_PRISMATIC_FORCE,
-    RobotBrain, Steering, compile_brain,
+    RobotBrain, Steering, compile_brain, motor_effort,
 };
 use crate::simulation::clock::GenerationClock;
 use crate::simulation::hyperneat::joint_sides;
@@ -27,6 +27,12 @@ use symbios_robot::{JointType, RobotBlueprint, SensorType};
 
 /// Distance between neighbouring robots on the spawn grid (m).
 const SPAWN_SPACING: f32 = 10.0;
+
+/// Moves the whole spawn grid (world x and z, m). Zero in an evolution run;
+/// a fresh condition sets it (see `headless::FreshSpots`), so that its
+/// robots start somewhere else than the last condition's did.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct SpawnShift(pub Vec2);
 
 /// Tells leg damage's draws apart from the grounds' and targets'.
 const DAMAGE_STREAM: u64 = 0xDA3A_6E00_0000_0001;
@@ -179,6 +185,7 @@ pub fn spawn_agents(
     ground: Res<Ground>,
     rng: Res<LabRng>,
     user_target: Res<UserTarget>,
+    shift: Res<SpawnShift>,
 ) {
     if !population.is_changed() || population.agents.is_empty() {
         return;
@@ -209,10 +216,11 @@ pub fn spawn_agents(
                 }
             },
         };
-        let grid = Vec2::new(
-            (index % cols) as f32 * SPAWN_SPACING - offset,
-            (index / cols) as f32 * SPAWN_SPACING - offset,
-        );
+        let grid = shift.0
+            + Vec2::new(
+                (index % cols) as f32 * SPAWN_SPACING - offset,
+                (index / cols) as f32 * SPAWN_SPACING - offset,
+            );
         let robot = RobotSpawn {
             genotype: &agent.genotype,
             blueprint: &blueprint,
@@ -314,7 +322,8 @@ impl Wiring {
 /// rest when the blueprint gave it none, with its motor held to the
 /// limit's effort up to `max_effort`. The effort is a mutable constant in
 /// the morphology, so motor strength evolves; the cap keeps a mutation from
-/// building rocket legs.
+/// building rocket legs, and an effort of zero or less is no motor (see
+/// [`motor_effort`]).
 fn driven(
     joint: &SpawnedJoint,
     default_range: f32,
@@ -330,7 +339,7 @@ fn driven(
         max,
         max_effort: joint
             .limit
-            .map_or(max_effort, |l| l.effort.clamp(0.0, max_effort)),
+            .map_or(max_effort, |l| motor_effort(l.effort, max_effort)),
         leg,
         broken: false,
     }
@@ -459,8 +468,15 @@ mod tests {
         assert_eq!((weak.leg, weak.broken), (Some(2), false));
         let mutated = driven(Some(limit(9e6)), None);
         assert_eq!(mutated.max_effort, 5000.0);
-        let negative = driven(Some(limit(-20.0)), None);
-        assert_eq!(negative.max_effort, 0.0);
+        assert!(weak.powered() && mutated.powered());
+        // No effort, less than none or no number: no motor, where avian
+        // would read the 0 as "no limit".
+        for effort in [0.0, -20.0, f32::NAN, f32::NEG_INFINITY] {
+            let limp = driven(Some(limit(effort)), None);
+            assert_eq!(limp.max_effort, 0.0, "effort {effort}");
+            assert!(!limp.powered(), "effort {effort}");
+        }
+        assert_eq!(driven(Some(limit(f32::INFINITY)), None).max_effort, 5000.0);
         let unlimited = driven(None, None);
         assert_eq!(
             (unlimited.min, unlimited.max, unlimited.max_effort),

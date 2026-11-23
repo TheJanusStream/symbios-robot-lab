@@ -35,6 +35,10 @@
 //! - `--save-best PATH` write the run's best robot as JSON at the end
 //! - `--fresh N` at the end, score the hall of fame's best four robots
 //!   under N fresh conditions (their recorded scores may be lucky)
+//! - `--fresh-spots moved|same` whether each fresh condition sets its robots
+//!   down somewhere else, or all on the same spots as fresh walks did
+//!   before (on the flat floor every condition then repeats the same two
+//!   walks): `same` repeats older figures [moved]
 //! - `--save-hall PATH` write the hall of fame as a JSON array at the end
 //! - `--score PATH` instead of evolving, score saved robots (a champion, a
 //!   genotype or a whole hall) under `--fresh` conditions [8] with the
@@ -54,7 +58,9 @@ use std::time::Instant;
 use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
 use symbios_robot_lab::core::descriptor::QdDescriptor;
 use symbios_robot_lab::core::genome::INITIAL_LSYSTEM_ITERATIONS;
-use symbios_robot_lab::headless::{FreshWalk, HeadlessLab, condition_means, fresh_walks};
+use symbios_robot_lab::headless::{
+    FreshSpots, FreshWalk, HeadlessLab, condition_means, fresh_walks_from,
+};
 use symbios_robot_lab::simulation::generation::MIN_MOTORS;
 use symbios_robot_lab::simulation::hall_of_fame::Champion;
 use symbios_robot_lab::simulation::lifecycle::{MAX_BODY_PARTS, derive_blueprint};
@@ -72,6 +78,7 @@ struct Options {
     plans: Option<String>,
     save_best: Option<String>,
     fresh: usize,
+    fresh_spots: FreshSpots,
     save_hall: Option<String>,
     score: Vec<String>,
     walks: Option<String>,
@@ -125,6 +132,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
         plans: None,
         save_best: None,
         fresh: 0,
+        fresh_spots: FreshSpots::Moved,
         save_hall: None,
         score: Vec::new(),
         walks: None,
@@ -152,6 +160,13 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
                 options.config.retests = value()?.parse().map_err(|e| number_error(&e))?;
             }
             "--fresh" => options.fresh = value()?.parse().map_err(|e| number_error(&e))?,
+            "--fresh-spots" => {
+                options.fresh_spots = match value()?.as_str() {
+                    "moved" => FreshSpots::Moved,
+                    "same" => FreshSpots::Same,
+                    other => return Err(format!("--fresh-spots: moved or same, not {other}")),
+                };
+            }
             "--mutation-rate" => {
                 options.config.mutation_rate = value()?.parse().map_err(|e| number_error(&e))?;
             }
@@ -251,7 +266,8 @@ fn score(options: &Options) -> Result<(), Box<dyn Error>> {
             if options.config.task.steers() && genotype.steering_gain == 0.0 {
                 genotype.steering_gain = f32::MIN_POSITIVE;
             }
-            let walks = fresh_walks(&options.config, &genotype, conditions);
+            let walks =
+                fresh_walks_from(&options.config, &genotype, conditions, options.fresh_spots);
             let scores = condition_means(&walks);
             let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
             let worst = scores.iter().copied().fold(f32::INFINITY, f32::min);
@@ -383,7 +399,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut rows = String::from(WALKS_HEADER);
         rows.push('\n');
         for (rank, champion) in champions.iter().enumerate() {
-            let walks = fresh_walks(&options.config, &champion.genotype, options.fresh);
+            let walks = fresh_walks_from(
+                &options.config,
+                &champion.genotype,
+                options.fresh,
+                options.fresh_spots,
+            );
             let scores = condition_means(&walks);
             walk_rows(
                 &mut rows,

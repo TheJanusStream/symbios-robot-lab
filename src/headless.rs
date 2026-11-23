@@ -23,7 +23,8 @@ use crate::simulation::generation::phenotype_of;
 use crate::simulation::hall_of_fame::{HallOfFame, Immigrants};
 use crate::simulation::lifecycle::SpawnRequest;
 use crate::simulation::physics::FIXED_HZ;
-use crate::simulation::rng::LabRng;
+use crate::simulation::rng::{LabRng, generation_seed};
+use crate::simulation::spawn::SpawnShift;
 use crate::simulation::telemetry::{GenerationSummary, Telemetry};
 use bevy::prelude::*;
 use bevy::time::TimeUpdateStrategy;
@@ -41,6 +42,44 @@ const STALL_SLACK_UPDATES: usize = 16;
 const FRESH_SEED_BASE: u64 = 0xF2E5_0000_0000;
 /// Clones of a robot walking each fresh condition, from different spots.
 pub const FRESH_CLONES: usize = 2;
+/// How far a fresh condition moves its robots' spots at most, either way
+/// along x and z (m): with it they start within the square a population of
+/// 64 starts in, on the ground evolution walked.
+pub const FRESH_SPOT_REACH: f32 = 30.0;
+/// Tells the draws of the fresh conditions' spots apart from the grounds',
+/// the targets' and the broken legs'.
+const SPOT_STREAM: u64 = 0x5907_5EED_0000_0001;
+
+/// Where a fresh condition sets its robots down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FreshSpots {
+    /// Somewhere else in every condition: the spawn grid moved by a draw
+    /// from the condition's seed, up to [`FRESH_SPOT_REACH`] either way.
+    #[default]
+    Moved,
+    /// On the same spots in every condition, as fresh walks were set down
+    /// before the conditions moved them: kept so that older figures can be
+    /// repeated. A condition's seed still changes the ground, the targets
+    /// and the broken legs. On the flat floor with the forward task it then
+    /// changes nothing, and every condition repeats the same walks, one per
+    /// clone.
+    Same,
+}
+
+impl FreshSpots {
+    /// How far fresh condition `condition` moves the spawn grid.
+    pub fn shift(self, condition: u64) -> Vec2 {
+        match self {
+            FreshSpots::Same => Vec2::ZERO,
+            FreshSpots::Moved => {
+                let draw = generation_seed(FRESH_SEED_BASE + condition, 0, SPOT_STREAM);
+                // Each half of the draw, as a number from -1 up to 1.
+                let unit = |bits: u64| (bits & 0xFFFF_FFFF) as f32 / 2_147_483_648.0 - 1.0;
+                Vec2::new(unit(draw), unit(draw >> 32)) * FRESH_SPOT_REACH
+            }
+        }
+    }
+}
 
 /// Why a headless run stopped early.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,10 +227,11 @@ impl HeadlessLab {
 /// The honest measure of a robot evolved under changing conditions: the
 /// score it was selected for came from one walk, and one walk can flatter.
 ///
-/// What a condition's seed changes is the ground, the targets and the
-/// broken legs. On the flat floor with the forward task it changes
-/// nothing, so every condition repeats the same walks there: one per
-/// clone, from that clone's spot.
+/// What a condition's seed changes is the spots the robots start from
+/// ([`FreshSpots::Moved`]), the ground, the targets and the broken legs. On
+/// the flat floor with the forward task the spots are all it changes, and
+/// they are enough: the same robot walks a different walk from every spot,
+/// because a walk is sensitive to the last digit of where it began.
 pub fn fresh_scores(config: &LabConfig, genotype: &AgentGenotype, conditions: usize) -> Vec<f32> {
     condition_means(&fresh_walks(config, genotype, conditions))
 }
@@ -231,10 +271,21 @@ pub struct FreshWalk {
 
 /// Every clone's walk under `conditions` fresh conditions, in order of
 /// condition ([`FRESH_CLONES`] walks each): what [`fresh_scores`] averages.
+/// Each condition moves the robots' spots ([`FreshSpots::Moved`]).
 pub fn fresh_walks(
     config: &LabConfig,
     genotype: &AgentGenotype,
     conditions: usize,
+) -> Vec<FreshWalk> {
+    fresh_walks_from(config, genotype, conditions, FreshSpots::Moved)
+}
+
+/// [`fresh_walks`], with the robots set down as `spots` says.
+pub fn fresh_walks_from(
+    config: &LabConfig,
+    genotype: &AgentGenotype,
+    conditions: usize,
+    spots: FreshSpots,
 ) -> Vec<FreshWalk> {
     (0..conditions as u64)
         .flat_map(|k| {
@@ -243,6 +294,9 @@ pub fn fresh_walks(
                 seed: Some(FRESH_SEED_BASE + k),
                 ..config.clone()
             });
+            lab.app
+                .world_mut()
+                .insert_resource(SpawnShift(spots.shift(k)));
             // One generation, kept for scoring instead of bred from.
             lab.app.world_mut().resource_mut::<LabConfig>().auto_restart = false;
             for _ in 0..FRESH_CLONES {
