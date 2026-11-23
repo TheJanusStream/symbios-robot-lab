@@ -9,7 +9,7 @@ use symbios_robot::RobotBlueprint;
 pub struct Agent {
     pub genotype: AgentGenotype,
     pub fitness: f32,
-    /// Number of motors (hinge joints) in this robot (for NSGA-II minimization objective).
+    /// The robot's driven joints (hinges and sliders).
     pub num_motors: usize,
     /// The root entity of the spawned robot in the Bevy world
     pub root_entity: Option<Entity>,
@@ -38,24 +38,28 @@ pub struct Agent {
     pub avg_height: f32,
 
     // ── SOTA metrics (populated by `update_fitness_scores`) ────────────────
-    /// Mechanical-work proxy `Σ |τ_max · Δθ|` — numerator of CoT.
+    /// Work the motors did (J), the numerator of CoT.
     pub mechanical_work: f32,
     /// Stddev of `up_alignment` over the eval window. Lower = more stable
     /// orientation.
     pub up_alignment_stddev: f32,
-    /// Stddev of body Y — the "CoM bounce" amplitude. Drives
+    /// Stddev of body Y, the "CoM bounce" amplitude. Drives
     /// `ComBounceReward`; near-zero is the vibrobot signature.
     pub com_bounce: f32,
     /// Mean forward velocity (m/s) over the post-settling window.
     /// Drives `VelocityGate`.
     pub avg_velocity: f32,
-    /// Mean per-tick per-joint `Σ |Δv_target|²`. Lower = smoother control.
-    pub action_smoothness: f32,
-    /// Mean per-tick per-joint `Σ |a_t − 2·a_{t−1} + a_{t−2}|²`. Drives
-    /// `ControlJerkReward` — the anti-vibration term.
-    pub control_jerk: f32,
+    /// How often the command of the joint that turns most often turned
+    /// round and back (Hz). Drives `SteadyCommands`, the anti-vibration
+    /// gate.
+    pub command_turn_hz: f32,
     /// Mean per-tick `|Δv_body|² / Δt`. Lower = smoother body motion.
     pub body_jerk: f32,
+    /// How far the hinges turned (rad) and the sliders slid (m), summed
+    /// over the driven joints. With the body's size and the distance, the
+    /// economy NSGA-II's second objective scores.
+    pub hinge_travel: f32,
+    pub slider_travel: f32,
     /// Mean fraction of touch sensors in contact each tick. QD axis.
     pub support_duty_factor: f32,
     /// Mean contact↔air transitions per touch sensor over the window.
@@ -63,8 +67,8 @@ pub struct Agent {
     pub foot_transitions_per_sensor: f32,
     /// Mean per-joint commanded-velocity magnitude. QD axis.
     pub action_intensity: f32,
-    /// Cost of Transport (dimensionless `E / (m·g·d)`). NSGA-II objective 1
-    /// is `1 / (1 + cost_of_transport)`.
+    /// Cost of Transport (dimensionless `E / (m·g·d)`), from the work the
+    /// motors did. Shown in the inspector; no objective.
     pub cost_of_transport: f32,
     /// A parent walking again, whose score joins the average of its earlier
     /// walks rather than entering the parent pool as a newcomer.
@@ -98,9 +102,10 @@ impl Agent {
             up_alignment_stddev: 0.0,
             com_bounce: 0.0,
             avg_velocity: 0.0,
-            action_smoothness: 0.0,
-            control_jerk: 0.0,
+            command_turn_hz: 0.0,
             body_jerk: 0.0,
+            hinge_travel: 0.0,
+            slider_travel: 0.0,
             support_duty_factor: 0.0,
             foot_transitions_per_sensor: 0.0,
             action_intensity: 0.0,

@@ -3,13 +3,16 @@
 
 use bevy::math::Vec2;
 use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
-use symbios_robot_lab::headless::{HeadlessLab, fresh_scores};
+use symbios_robot_lab::headless::{
+    FRESH_CLONES, HeadlessLab, condition_means, fresh_scores, fresh_walks,
+};
 use symbios_robot_lab::simulation::brain::RobotBrain;
 use symbios_robot_lab::simulation::hall_of_fame::{
     Entrant, LANE_SPACING, Lane, Showcase, ShowcaseRequest,
 };
 use symbios_robot_lab::simulation::lifecycle::SpawnRequest;
 use symbios_robot_lab::simulation::lineage::{Lineage, RACE_LANES};
+use symbios_robot_lab::simulation::physics::GRAVITY;
 use symbios_robot_lab::simulation::spawn::{SHOWCASE_INDEX, showcase_index};
 use symbios_robot_lab::simulation::target::{TARGET_LEGS, WalkTarget};
 use symbios_robot_lab::simulation::telemetry::{GenerationSummary, Telemetry};
@@ -338,6 +341,55 @@ fn fresh_scores_walk_a_robot_under_new_conditions() {
     assert_eq!(
         scores,
         fresh_scores(&small_config(31), &champion.genotype, 3)
+    );
+}
+
+/// A walk measures what the fitness and the economy objective are made of:
+/// the champions' commands turn round, their motors do work wherever they
+/// get anywhere, and the work is a believable one for the weight moved.
+/// The fresh scores are these walks' fitness, averaged per condition.
+#[test]
+fn a_walk_counts_command_turns_and_the_motors_work() {
+    let mut lab = HeadlessLab::new(small_config(31));
+    lab.run(3, |_| {}).expect("finishes");
+    let champions = lab.hall_of_fame().champions().to_vec();
+    assert!(!champions.is_empty(), "a robot walked");
+    let (mut walked, mut turned) = (0, 0);
+    for champion in &champions {
+        let walks = fresh_walks(&small_config(31), &champion.genotype, 2);
+        assert_eq!(walks.len(), 2 * FRESH_CLONES);
+        assert_eq!(
+            condition_means(&walks),
+            fresh_scores(&small_config(31), &champion.genotype, 2)
+        );
+        for walk in &walks {
+            let t = &walk.trajectory;
+            assert!(walk.motors > 4, "{} motors", walk.motors);
+            assert!(walk.body.is_some_and(|body| body.size > 0.5));
+            // Brains run 32 times a second: no command turns faster.
+            assert!((0.0..=16.0).contains(&t.command_turn_hz));
+            if walk.exploded || t.forward_displacement < 0.2 {
+                continue;
+            }
+            walked += 1;
+            turned += usize::from(t.command_turn_hz > 0.0);
+            let cost = t.mechanical_work / (t.mass * GRAVITY * t.forward_displacement);
+            assert!(
+                (0.01..1000.0).contains(&cost),
+                "{} J to move {} kg {} m",
+                t.mechanical_work,
+                t.mass,
+                t.forward_displacement
+            );
+        }
+    }
+    assert!(
+        walked > 0,
+        "no champion got anywhere under fresh conditions"
+    );
+    assert!(
+        turned > 0,
+        "no walking champion's command ever turned round"
     );
 }
 

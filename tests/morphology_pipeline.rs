@@ -337,13 +337,17 @@ fn every_plan_grows_a_body_the_lab_scores() {
 }
 
 /// The body traits quality diversity can spread robots over: every plan
-/// spans 1.5 to 6 m.
+/// spans 1.5 to 6 m. Its size, the edge of a cube as roomy as the box around
+/// it, is shorter than its length (a plan is longer than it is wide or
+/// tall) and about 2 m.
 #[test]
 fn every_plan_has_a_length_on_the_scale() {
     for (name, source) in plans() {
         let traits = BodyTraits::of(&body(source, INITIAL_LSYSTEM_ITERATIONS).blueprint);
         assert_eq!(traits.feet, 4, "{name}: {traits:?}");
         assert!((1.5..6.0).contains(&traits.length), "{name}: {traits:?}");
+        assert!((1.5..2.5).contains(&traits.size), "{name}: {traits:?}");
+        assert!(traits.size < traits.length, "{name}: {traits:?}");
     }
 }
 

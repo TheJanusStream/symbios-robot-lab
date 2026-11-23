@@ -111,6 +111,9 @@ pub struct BodyTraits {
     pub feet: usize,
     /// The longest horizontal extent of the parts at rest (m).
     pub length: f32,
+    /// The edge (m) of the cube that holds as much as the box around the
+    /// parts at rest: how big the body is, whatever its shape.
+    pub size: f32,
 }
 
 impl BodyTraits {
@@ -135,7 +138,11 @@ impl BodyTraits {
             });
         }
         let length = bounds.map_or(0.0, |(lo, hi)| (hi.x - lo.x).max(hi.z - lo.z));
-        Self { feet, length }
+        let size = bounds.map_or(0.0, |(lo, hi)| {
+            let extent = hi - lo;
+            (extent.x * extent.y * extent.z).max(0.0).cbrt()
+        });
+        Self { feet, length, size }
     }
 
     /// The feet and length traits, scaled to `[0, 1]`.
@@ -174,7 +181,12 @@ mod tests {
     #[test]
     fn each_foot_count_below_the_scale_has_its_own_grid_column() {
         let column = |feet: usize| {
-            let x = BodyTraits { feet, length: 1.0 }.scaled()[0];
+            let x = BodyTraits {
+                feet,
+                length: 1.0,
+                size: 1.0,
+            }
+            .scaled()[0];
             (x * 20.0).floor().min(19.0) as usize
         };
         let columns: Vec<usize> = (0..=12).map(column).collect();

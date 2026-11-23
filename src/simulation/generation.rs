@@ -7,7 +7,7 @@ use crate::core::genome::AgentGenotype;
 use crate::core::morphology_pool::RuntimeMorphologyPool;
 use crate::core::population::{Agent, Population, RobotIds};
 use crate::simulation::clock::GenerationClock;
-use crate::simulation::fitness::{NUM_OBJECTIVES, evaluate_trajectory, trajectory_of};
+use crate::simulation::fitness::{NUM_OBJECTIVES, SCORING, evaluate_trajectory, trajectory_of};
 use crate::simulation::hall_of_fame::{Champion, HallOfFame, Immigrants};
 use crate::simulation::lifecycle::{DerivedBody, derive_blueprint, fresh_agent_from_pool};
 use crate::simulation::lineage::Lineage;
@@ -96,6 +96,7 @@ pub fn end_generation(
                 fitness: Some(fitness),
                 generation: Some(generation),
                 walks,
+                scoring: SCORING,
             });
         }
     }
@@ -109,6 +110,7 @@ pub fn end_generation(
                 fitness: Some(best.fitness),
                 generation: Some(generation),
                 walks,
+                scoring: SCORING,
             },
         );
     }

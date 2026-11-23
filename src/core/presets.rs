@@ -9,15 +9,19 @@
 //! what evolution did with the catalogue was to cut bodies down: sixteen runs
 //! of 100 generations ended on the millipede fourteen times, nine of those
 //! stripped to one leg pair and a tail on five or six motors (the lab scores
-//! no body with fewer than five). Two things decide what a plan is worth
-//! here, and neither is how well it walks at first:
+//! no body with fewer than five). Two things decided the choice, and neither
+//! was how well a plan walks at first:
 //!
-//! - **The fitness pays for few motors.** It multiplies the distance walked
-//!   by quality factors, and the one that bites is control jerk: a leg with a
-//!   knee or a slider near its foot sensor is steered by that sensor in
-//!   steps, and kept 3 to 8 percent of its distance in the plans tried. A
-//!   body with one motor per leg learns to walk in a few generations. So the
-//!   plans have stiff legs, and what evolution adds is legs and trunk.
+//! - **The fitness of the time paid for few motors.** It taxed the speed of
+//!   every joint (see [`crate::simulation::fitness`]): a leg with a knee or
+//!   a slider near its foot sensor is steered by that sensor in steps, and
+//!   kept 3 to 8 percent of its distance in the plans tried, while a body
+//!   with one motor per leg learned to walk in a few generations. So the
+//!   plans have stiff legs, and what evolution adds is legs and trunk. The
+//!   fitness that replaced it does not: when it came, the drafts with kneed
+//!   and with sliding legs scored 5.9 and 6.1 after twelve generations where
+//!   these plans scored 8.2 (0.26 and 0.24 against 1.6 before), so such legs
+//!   are worth another look.
 //! - **Plans share a gene pool, and a fast starter takes it over.** A crab
 //!   (six stiff legs in a ring) scored twice the skink's fitness after ten
 //!   generations, won all sixteen runs it shared with the skink, and then

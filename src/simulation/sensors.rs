@@ -147,7 +147,10 @@ impl InputLayout {
 /// angular velocity in its own frame lost 20 to 40% of the final fitness,
 /// and feeding no IMU at all lost about 20%, so the jolts help. A likely
 /// reason: fresh brains that react to them move jerkily and score near
-/// zero, which favours decisive, clock-driven gaits from the start. Tilt
+/// zero, which favours decisive, clock-driven gaits from the start. (All of
+/// this was measured under the lab's earlier fitness, which taxed every
+/// change of a command, and not again since
+/// [`crate::simulation::fitness`] stopped doing so.) Tilt
 /// added beside it, as two more inputs ([`LabConfig::tilt_sense`]), did not
 /// help on hills either (32 seeds).
 ///

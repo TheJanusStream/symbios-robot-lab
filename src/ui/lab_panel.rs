@@ -174,9 +174,9 @@ pub fn render_ui(
                     "The best parents walk again each generation, in children's places, and \
                      are judged by their average. Every robot walks from its own spot (and on \
                      new ground, toward new targets), so one walk can flatter it; walking \
-                     again keeps the parents and the hall of fame honest. Worth it on rough or \
-                     hilly ground, toward targets or with leg damage; on the flat floor it \
-                     costs children. At most a quarter of the population.",
+                     again keeps the parents and the hall of fame honest: with 8, champions \
+                     kept 89% of their score when they walked again against 70% with none, \
+                     and walked as well. At most a quarter of the population.",
                 );
         }
         ui.add_enabled(
@@ -431,7 +431,10 @@ pub fn render_ui(
                 .collect();
             if obj_data.len() >= 2 {
                 ui.separator();
-                ui.label("Pareto front (walker_fitness vs 1/(1+CoT)):");
+                ui.label("Pareto front (fitness vs economy):").on_hover_text(
+                    "Economy is how little the joints move for the ground covered: 1 over 1 \
+                     plus a tenth of the joint travel per metre walked",
+                );
 
                 let graph_width = ui.available_width();
                 let graph_height = 120.0;
@@ -565,7 +568,7 @@ pub fn render_ui(
                     {
                         response.on_hover_ui(|ui| {
                             ui.label(format!("Fitness: {:.3}", point.fitness));
-                            ui.label(format!("Efficiency: {:.3}", point.efficiency));
+                            ui.label(format!("Economy: {:.3}", point.efficiency));
                             ui.label(format!("Front: {}", point.front));
                             if protecting {
                                 ui.label(format!("Body age: {} generations", point.body_age));

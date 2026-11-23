@@ -12,10 +12,12 @@
 //! ```
 
 use crate::core::config::LabConfig;
+use crate::core::descriptor::BodyTraits;
 use crate::core::genome::AgentGenotype;
 use crate::core::population::Population;
 use crate::simulation::SimulationPlugin;
 use crate::simulation::clock::GenerationClock;
+use crate::simulation::fitness::{AgentTrajectory, trajectory_of};
 use crate::simulation::generation::phenotype_of;
 use crate::simulation::hall_of_fame::{HallOfFame, Immigrants};
 use crate::simulation::lifecycle::SpawnRequest;
@@ -37,7 +39,7 @@ const STALL_SLACK_UPDATES: usize = 16;
 /// seeds runs use.
 const FRESH_SEED_BASE: u64 = 0xF2E5_0000_0000;
 /// Clones of a robot walking each fresh condition, from different spots.
-const FRESH_CLONES: usize = 2;
+pub const FRESH_CLONES: usize = 2;
 
 /// Why a headless run stopped early.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,8 +172,51 @@ impl HeadlessLab {
 /// The honest measure of a robot evolved under changing conditions: the
 /// score it was selected for came from one walk, and one walk can flatter.
 pub fn fresh_scores(config: &LabConfig, genotype: &AgentGenotype, conditions: usize) -> Vec<f32> {
-    (0..conditions as u64)
+    condition_means(&fresh_walks(config, genotype, conditions))
+}
+
+/// Each condition's mean fitness over its clones, in order of condition.
+pub fn condition_means(walks: &[FreshWalk]) -> Vec<f32> {
+    let conditions = walks.iter().map(|w| w.condition + 1).max().unwrap_or(0);
+    (0..conditions)
         .map(|k| {
+            let (sum, clones) = walks
+                .iter()
+                .filter(|w| w.condition == k)
+                .fold((0.0, 0), |(sum, clones), w| (sum + w.fitness, clones + 1));
+            sum / clones.max(1) as f32
+        })
+        .collect()
+}
+
+/// One clone's walk under one fresh condition: its score and everything the
+/// score was made from, so that a walk can be judged by other measures than
+/// the fitness (how far, how fast for its size, at what cost).
+#[derive(Debug, Clone)]
+pub struct FreshWalk {
+    /// Which of the fresh conditions, from 0.
+    pub condition: usize,
+    /// The walk's fitness, a failed walk counting as 0.
+    pub fitness: f32,
+    /// The physics blew the robot apart.
+    pub exploded: bool,
+    /// The robot's driven joints.
+    pub motors: usize,
+    /// Its feet and its size at rest, if its morphology builds a body.
+    pub body: Option<BodyTraits>,
+    /// What the walk measured.
+    pub trajectory: AgentTrajectory,
+}
+
+/// Every clone's walk under `conditions` fresh conditions, in order of
+/// condition ([`FRESH_CLONES`] walks each): what [`fresh_scores`] averages.
+pub fn fresh_walks(
+    config: &LabConfig,
+    genotype: &AgentGenotype,
+    conditions: usize,
+) -> Vec<FreshWalk> {
+    (0..conditions as u64)
+        .flat_map(|k| {
             let mut lab = HeadlessLab::new(LabConfig {
                 population_size: FRESH_CLONES,
                 seed: Some(FRESH_SEED_BASE + k),
@@ -191,11 +236,17 @@ pub fn fresh_scores(config: &LabConfig, genotype: &AgentGenotype, conditions: us
                 }
             }
             let agents = &lab.population().agents;
-            let total: f32 = agents
+            agents
                 .iter()
-                .map(|agent| phenotype_of(agent).fitness.max(0.0))
-                .sum();
-            total / agents.len().max(1) as f32
+                .map(|agent| FreshWalk {
+                    condition: k as usize,
+                    fitness: phenotype_of(agent).fitness.max(0.0),
+                    exploded: agent.exploded,
+                    motors: agent.num_motors,
+                    body: agent.body_traits,
+                    trajectory: trajectory_of(agent),
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }

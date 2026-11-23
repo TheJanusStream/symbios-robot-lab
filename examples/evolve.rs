@@ -20,7 +20,7 @@
 //!   brain reads [forward]
 //! - `--mutation-rate R` [0.3]
 //! - `--parent-share F` share of the population kept as parents [0.5]
-//! - `--retests N` best parents walking again each generation [0]
+//! - `--retests N` best parents walking again each generation [8]
 //! - `--vary-body-or-brain on|off` each child varies its body or its
 //!   brain, not both [on]
 //! - `--protect-new-bodies on|off` morphological innovation protection,
@@ -39,13 +39,18 @@
 //!   bred (one bred without a steering reflex walks to targets without
 //!   one); repeatable
 //! - `--csv PATH` also write the rows to a CSV file
+//! - `--walks PATH` with `--fresh` or `--score`, write every fresh walk as a
+//!   CSV row: its score and what the score was made from (metres, speed,
+//!   the gates' inputs, the motors' work) with the robot's mass, size,
+//!   driven joints and feet, to judge robots by other measures than the
+//!   fitness that bred them
 
 use std::error::Error;
 use std::fmt::Write as _;
 use std::time::Instant;
 use symbios_robot_lab::core::config::{BrainEncoding, GeneticAlgorithm, LabConfig, Task, Terrain};
 use symbios_robot_lab::core::descriptor::QdDescriptor;
-use symbios_robot_lab::headless::{HeadlessLab, fresh_scores};
+use symbios_robot_lab::headless::{FreshWalk, HeadlessLab, condition_means, fresh_walks};
 use symbios_robot_lab::simulation::hall_of_fame::Champion;
 use symbios_robot_lab::simulation::telemetry::GenerationSummary;
 
@@ -62,6 +67,46 @@ struct Options {
     fresh: usize,
     save_hall: Option<String>,
     score: Vec<String>,
+    walks: Option<String>,
+}
+
+/// The header of the `--walks` file.
+const WALKS_HEADER: &str = "robot,believed,steps,condition,fitness,exploded,motors,feet,size,\
+length,mass,metres,velocity,command_turn_hz,up_stddev,body_jerk,foot_transitions,bounce,height,\
+duty,intensity,motor_work,hinge_travel,slider_travel";
+
+/// One robot's fresh walks as rows of the `--walks` file: the walk's score
+/// and what it was made from, with the robot's recorded score and its
+/// body's derivation steps, driven joints, feet, size and length.
+fn walk_rows(out: &mut String, robot: &str, believed: f32, steps: usize, walks: &[FreshWalk]) {
+    for walk in walks {
+        let t = &walk.trajectory;
+        let (feet, size, length) = walk
+            .body
+            .map_or((0, 0.0, 0.0), |b| (b.feet, b.size, b.length));
+        let _ = writeln!(
+            out,
+            "{robot},{believed},{steps},{},{},{},{},{feet},{size},{length},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            walk.condition,
+            walk.fitness,
+            u8::from(walk.exploded),
+            walk.motors,
+            t.mass,
+            t.forward_displacement,
+            t.avg_velocity,
+            t.command_turn_hz,
+            t.up_alignment_stddev,
+            t.body_jerk,
+            t.foot_transitions_per_sensor,
+            t.com_bounce,
+            t.avg_height,
+            t.support_duty_factor,
+            t.action_intensity,
+            t.mechanical_work,
+            t.hinge_travel,
+            t.slider_travel,
+        );
+    }
 }
 
 fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> {
@@ -74,6 +119,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
         fresh: 0,
         save_hall: None,
         score: Vec::new(),
+        walks: None,
     };
     let mut args = args.peekable();
     while let Some(flag) = args.next() {
@@ -139,6 +185,7 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
             "--import" => options.imports.push(value()?),
             "--save-hall" => options.save_hall = Some(value()?),
             "--score" => options.score.push(value()?),
+            "--walks" => options.walks = Some(value()?),
             "--save-best" => options.save_best = Some(value()?),
             "--csv" => options.csv = Some(value()?),
             other => return Err(format!("unknown option {other}")),
@@ -146,6 +193,9 @@ fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> 
     }
     if options.config.population_size < 2 {
         return Err("--population must be at least 2".into());
+    }
+    if options.walks.is_some() && options.fresh == 0 && options.score.is_empty() {
+        return Err("--walks writes fresh walks: give --fresh N or --score PATH with it".into());
     }
     Ok(options)
 }
@@ -177,6 +227,8 @@ fn row(summary: &GenerationSummary, seconds: f64) -> String {
 /// Scores saved robots under fresh conditions without evolving.
 fn score(options: &Options) -> Result<(), Box<dyn Error>> {
     let conditions = if options.fresh > 0 { options.fresh } else { 8 };
+    let mut rows = String::from(WALKS_HEADER);
+    rows.push('\n');
     for path in &options.score {
         let robots = Champion::all_from_json(&std::fs::read_to_string(path)?)
             .map_err(|err| format!("{path}: {err}"))?;
@@ -187,7 +239,8 @@ fn score(options: &Options) -> Result<(), Box<dyn Error>> {
             if options.config.task.steers() && genotype.steering_gain == 0.0 {
                 genotype.steering_gain = f32::MIN_POSITIVE;
             }
-            let scores = fresh_scores(&options.config, &genotype, conditions);
+            let walks = fresh_walks(&options.config, &genotype, conditions);
+            let scores = condition_means(&walks);
             let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
             let worst = scores.iter().copied().fold(f32::INFINITY, f32::min);
             println!(
@@ -195,7 +248,17 @@ fn score(options: &Options) -> Result<(), Box<dyn Error>> {
                 robot.fitness.unwrap_or(0.0),
                 robot.walks
             );
+            walk_rows(
+                &mut rows,
+                &format!("{path}#{i}"),
+                robot.fitness.unwrap_or(0.0),
+                genotype.lsystem_iterations,
+                &walks,
+            );
         }
+    }
+    if let Some(path) = &options.walks {
+        std::fs::write(path, rows)?;
     }
     Ok(())
 }
@@ -262,8 +325,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             .cloned()
             .collect();
         let (mut believed, mut fresh) = (Vec::new(), Vec::new());
-        for champion in &champions {
-            let scores = fresh_scores(&options.config, &champion.genotype, options.fresh);
+        let mut rows = String::from(WALKS_HEADER);
+        rows.push('\n');
+        for (rank, champion) in champions.iter().enumerate() {
+            let walks = fresh_walks(&options.config, &champion.genotype, options.fresh);
+            let scores = condition_means(&walks);
+            walk_rows(
+                &mut rows,
+                &format!("hall#{rank}"),
+                champion.fitness.unwrap_or(0.0),
+                champion.genotype.lsystem_iterations,
+                &walks,
+            );
             let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
             let worst = scores.iter().copied().fold(f32::INFINITY, f32::min);
             println!(
@@ -281,6 +354,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             mean(&fresh),
             mean(&believed)
         );
+        if let Some(path) = &options.walks {
+            std::fs::write(path, rows)?;
+        }
     }
     if let Some(path) = options.save_hall {
         std::fs::write(&path, lab.hall_of_fame().to_json())?;

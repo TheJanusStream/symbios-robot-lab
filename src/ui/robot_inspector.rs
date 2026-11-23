@@ -4,6 +4,7 @@ use bevy_egui::{EguiContexts, egui};
 use symbios_robot_lab::core::config::BrainEncoding;
 use symbios_robot_lab::core::population::Population;
 use symbios_robot_lab::simulation::brain::{Controller, RobotBrain};
+use symbios_robot_lab::simulation::fitness::{STEADY_COMMAND_HZ, VIBRATING_COMMAND_HZ};
 use symbios_robot_lab::simulation::metrics::AgentMetrics;
 use symbios_robot_lab::simulation::sensors::{
     AgentImu, AgentJoint, AgentSlider, AgentTouch, AgentUltrasonic, INPUTS_PER_IMU, InputLayout,
@@ -82,11 +83,12 @@ pub fn render_robot_inspector(
                         ui.label("Avg velocity:");
                         ui.label(format!("{:.3}", agent.avg_velocity));
                         ui.end_row();
-                        ui.label("Action smoothness:");
-                        ui.label(format!("{:.3}", agent.action_smoothness));
-                        ui.end_row();
-                        ui.label("Control jerk:");
-                        ui.label(format!("{:.4}", agent.control_jerk));
+                        ui.label("Command turns:").on_hover_text(format!(
+                            "How often the command of the joint that turns round most often \
+                             does so; free up to {STEADY_COMMAND_HZ} Hz, the fitness is 0 from \
+                             {VIBRATING_COMMAND_HZ} Hz"
+                        ));
+                        ui.label(format!("{:.2} Hz", agent.command_turn_hz));
                         ui.end_row();
                         ui.label("Body jerk:");
                         ui.label(format!("{:.3}", agent.body_jerk));
@@ -103,8 +105,17 @@ pub fn render_robot_inspector(
                         ui.label("Energy (cmd):");
                         ui.label(format!("{:.1}", agent.energy_consumed));
                         ui.end_row();
-                        ui.label("Mech work:");
-                        ui.label(format!("{:.1}", agent.mechanical_work));
+                        ui.label("Motor work:");
+                        ui.label(format!("{:.0} J", agent.mechanical_work));
+                        ui.end_row();
+                        ui.label("Joint travel:").on_hover_text(
+                            "How far the hinges turned and the sliders slid: what the economy \
+                             objective sets against the distance walked",
+                        );
+                        ui.label(format!(
+                            "{:.1} rad, {:.2} m",
+                            agent.hinge_travel, agent.slider_travel
+                        ));
                         ui.end_row();
                         ui.label("CoT:");
                         let cot = agent.cost_of_transport;

@@ -21,7 +21,7 @@ use crate::simulation::sensors::{
 };
 use crate::simulation::target::{UserTarget, WalkTarget, target_for};
 use crate::simulation::terrain::Ground;
-use avian3d::prelude::CollidingEntities;
+use avian3d::prelude::{CollidingEntities, JointForces};
 use bevy::prelude::*;
 use symbios_robot::{JointType, RobotBlueprint, SensorType};
 
@@ -227,13 +227,17 @@ pub fn spawn_agents(
                 .leg_damage
                 .then(|| damage_draw(rng.seed(), generation, index)),
         };
+        let body_size = agent.body_traits.map_or(0.0, |b| b.size);
         let spawned = spawn_robot(&mut commands, robot, &ground, |robot| {
-            let metrics = AgentMetrics::new(
-                robot.total_mass,
-                robot.hinges,
-                robot.num_motors,
-                robot.touches,
-            );
+            let metrics = AgentMetrics {
+                body_size,
+                ..AgentMetrics::new(
+                    robot.total_mass,
+                    robot.hinges,
+                    robot.num_motors,
+                    robot.touches,
+                )
+            };
             (metrics, FitnessBaseline::default())
         });
         match spawned {
@@ -392,23 +396,29 @@ fn wire_sensors_and_joints(
             JointType::Hinge { .. } => {
                 let leg = leg_of.get(&joint.child_module).copied();
                 let hinge = driven(joint, DEFAULT_HINGE_RANGE, MAX_MOTOR_TORQUE, leg);
-                commands.entity(joint.entity).insert(AgentJoint {
-                    brain_entity: brain,
-                    input_offset: layout.joint_offset(wiring.hinge_joints.len()),
-                    min: hinge.min,
-                    max: hinge.max,
-                });
+                commands.entity(joint.entity).insert((
+                    AgentJoint {
+                        brain_entity: brain,
+                        input_offset: layout.joint_offset(wiring.hinge_joints.len()),
+                        min: hinge.min,
+                        max: hinge.max,
+                    },
+                    JointForces::new(),
+                ));
                 wiring.hinge_joints.push(hinge);
             }
             JointType::Prismatic { .. } => {
                 let leg = leg_of.get(&joint.child_module).copied();
                 let slider = driven(joint, DEFAULT_SLIDER_RANGE, MAX_PRISMATIC_FORCE, leg);
-                commands.entity(joint.entity).insert(AgentSlider {
-                    brain_entity: brain,
-                    input_offset: layout.slider_offset(wiring.prismatic_joints.len()),
-                    min: slider.min,
-                    max: slider.max,
-                });
+                commands.entity(joint.entity).insert((
+                    AgentSlider {
+                        brain_entity: brain,
+                        input_offset: layout.slider_offset(wiring.prismatic_joints.len()),
+                        min: slider.min,
+                        max: slider.max,
+                    },
+                    JointForces::new(),
+                ));
                 wiring.prismatic_joints.push(slider);
             }
             JointType::Fixed | JointType::Ball | JointType::Screw { .. } => {}

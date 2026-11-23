@@ -13,13 +13,14 @@ use symbios_neat::{CppnEvaluator, EvaluatorError, FeedforwardNetwork, Scratchpad
 use symbios_robot::RobotBlueprint;
 
 /// The speed (rad/s) the metrics read a hinge output of ±1 as, when they
-/// judge the brain's commands for smoothness and intensity: the scale their
-/// thresholds were set at when outputs drove motor speeds. The motors now
-/// take outputs as positions (see [`drive_motors`]).
+/// measure how intense the brain's commands are (a trait of the gait
+/// descriptor, and the inspector's energy figure): the scale those were set
+/// at when outputs drove motor speeds. The motors now take outputs as
+/// positions (see [`drive_motors`]).
 pub const MAX_MOTOR_VELOCITY: f32 = 3.0;
 /// The most torque (N·m) any hinge motor may exert; a joint whose blueprint
 /// limit gives a smaller effort is held to that. Also the torque scale of
-/// the metrics' energy and work estimates.
+/// the inspector's commanded-energy figure.
 pub const MAX_MOTOR_TORQUE: f32 = 5000.0;
 /// The speed (m/s) the metrics read a slider output of ±1 as.
 pub const MAX_PRISMATIC_VELOCITY: f32 = 1.5;
@@ -276,8 +277,8 @@ impl RobotBrain {
 
     /// The brain's last outputs (hinges, then sliders) on the metrics' speed
     /// scale ([`MAX_MOTOR_VELOCITY`], [`MAX_PRISMATIC_VELOCITY`]): what the
-    /// metrics judge for smoothness and intensity, however the motors carry
-    /// them out.
+    /// metrics measure the commands' intensity from, however the motors
+    /// carry them out.
     pub fn commands(&self) -> impl Iterator<Item = f32> + '_ {
         let hinges = self.hinge_joints.len();
         self.outputs

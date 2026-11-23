@@ -54,8 +54,8 @@ use symbios_robot_lab::headless::HeadlessLab;
 use symbios_robot_lab::simulation::body::{legs, modules_in_order};
 use symbios_robot_lab::simulation::clock::GenerationClock;
 use symbios_robot_lab::simulation::fitness::{
-    ComBounceReward, ControlJerkReward, FootAirTimeFactor, InverseCoT, JerkReward,
-    OrientationStability, SmoothnessReward, VelocityGate, trajectory_of, walker_fitness,
+    ComBounceReward, CostOfTransport, Economy, FootAirTimeFactor, JerkReward, OrientationStability,
+    SteadyCommands, VelocityGate, trajectory_of, walker_fitness,
 };
 use symbios_robot_lab::simulation::generation::MIN_MOTORS;
 use symbios_robot_lab::simulation::hall_of_fame::Champion;
@@ -556,21 +556,21 @@ fn walk_one_generation(config: LabConfig, robots: Vec<AgentGenotype>) -> Option<
 /// what their fitness is made of.
 fn gait(paths: &[String], top: usize) -> Result<(), Box<dyn Error>> {
     println!(
-        "{:<28} {:>7} {:>6} {:>6} | {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} | {:>6} {:>5} {:>6}",
+        "{:<28} {:>7} {:>6} {:>6} | {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} | {:>6} {:>5} {:>7} {:>6}",
         "robot",
         "fitness",
         "metres",
         "m/s",
         "orient",
-        "smooth",
-        "cjerk",
+        "steady",
         "bjerk",
         "vgate",
         "feet",
         "bounce",
         "kg",
         "duty",
-        "1/CoT"
+        "economy",
+        "CoT"
     );
     for path in paths {
         let champions = Champion::all_from_json(&std::fs::read_to_string(path)?)
@@ -590,21 +590,21 @@ fn gait(paths: &[String], top: usize) -> Result<(), Box<dyn Error>> {
             for agent in &lab.population().agents {
                 let t = trajectory_of(agent);
                 println!(
-                    "{:<28} {:>7.3} {:>6.2} {:>6.2} | {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} | {:>6.1} {:>5.2} {:>6.3}{}",
+                    "{:<28} {:>7.3} {:>6.2} {:>6.2} | {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} | {:>6.1} {:>5.2} {:>7.3} {:>6.2}{}",
                     format!("{name}#{rank}"),
                     walker_fitness().score(&t),
                     t.forward_displacement,
                     t.avg_velocity,
                     OrientationStability.score(&t),
-                    SmoothnessReward.score(&t),
-                    ControlJerkReward.score(&t),
+                    SteadyCommands.score(&t),
                     JerkReward.score(&t),
                     VelocityGate.score(&t),
                     FootAirTimeFactor.score(&t),
                     ComBounceReward.score(&t),
                     t.mass,
                     t.support_duty_factor,
-                    InverseCoT.score(&t),
+                    Economy.score(&t),
+                    CostOfTransport.score(&t),
                     if agent.exploded { " EXPLODED" } else { "" },
                 );
             }

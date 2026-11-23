@@ -288,13 +288,15 @@ pub struct LabConfig {
     /// every generation (each robot walks from its own spot, on new ground,
     /// toward new targets), so one walk can flatter a robot; walking again
     /// keeps the parents honest. At most a quarter of the population; none
-    /// under novelty search, whose parents last one generation. It pays
-    /// where conditions change: on hills, 8 walking again (half the parents
-    /// kept) scored +0.24 under fresh conditions against half alone at 30
-    /// generations, and the champions' recorded scores held up (76% against
-    /// 52%). On the flat floor the children they displace cost a little
-    /// (-0.16 at 30 generations, -0.29 at 100; neither significant), so the
-    /// default is none.
+    /// under novelty search, whose parents last one generation. The default
+    /// is 8: over 16 seeds of 100 generations on the flat floor, champions
+    /// kept 89% of their recorded score under fresh conditions against 70%
+    /// with none walking again (p = 0.01), broke in 3% of their fresh walks
+    /// against 9%, and walked as well for it (20.4 against 20.6, failed
+    /// walks counted as 0). Under the lab's earlier fitness, whose gaits ran
+    /// on the clock alone and repeated themselves, it paid only where
+    /// conditions change (on hills +0.24 at 30 generations) and the default
+    /// was none.
     pub retests: usize,
     /// The two traits the quality-diversity algorithms spread robots over:
     /// gait, body, or feet and duty factor.
@@ -385,7 +387,7 @@ impl Default for LabConfig {
             vary_body_or_brain: true,
             protect_new_bodies: false,
             parent_share: 0.5,
-            retests: 0,
+            retests: 8,
             descriptor: QdDescriptor::default(),
             terrain: Terrain::default(),
             task: Task::default(),

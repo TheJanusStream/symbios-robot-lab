@@ -10,6 +10,7 @@ use crate::core::genome::{
 use crate::core::population::Population;
 use crate::core::share;
 use crate::simulation::brain::compile_brain;
+use crate::simulation::fitness::SCORING;
 use crate::simulation::lifecycle::derive_blueprint;
 use crate::simulation::rng::LabRng;
 use crate::simulation::spawn::{RobotSpawn, SHOWCASE_LANES, showcase_index, spawn_robot};
@@ -50,9 +51,17 @@ pub struct Champion {
     /// so a champion that walked again is a surer one.
     #[serde(default = "one_walk")]
     pub walks: u32,
+    /// The fitness formula its score was measured with ([`SCORING`]); a
+    /// champion saved before formulas were numbered has the first.
+    #[serde(default = "first_scoring")]
+    pub scoring: u32,
 }
 
 fn one_walk() -> u32 {
+    1
+}
+
+fn first_scoring() -> u32 {
     1
 }
 
@@ -70,7 +79,9 @@ impl Champion {
     /// of at most [`MAX_IMPORTED_PARTS`] parts that drives joints. It loses
     /// its identity: identities belong to the session that issued them, and
     /// one robot's could be another's here (it gets a new one if it joins
-    /// evolution).
+    /// evolution). A champion scored by another fitness formula than today's
+    /// ([`SCORING`]) loses its score too and arrives as an imported robot:
+    /// the hall ranks by score, and scores of two formulas do not compare.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut champion = match serde_json::from_str::<Champion>(text) {
             Ok(champion) => champion,
@@ -80,6 +91,7 @@ impl Champion {
                     fitness: None,
                     generation: None,
                     walks: 1,
+                    scoring: SCORING,
                 },
                 Err(_) => return Err(format!("not a robot: {champion_err}")),
             },
@@ -132,6 +144,12 @@ impl Champion {
         compile_brain(g, &body.blueprint, Senses::NONE)
             .map_err(|err| format!("its brain does not compile: {err}"))?;
         champion.genotype.id = 0;
+        if champion.scoring != SCORING {
+            champion.fitness = None;
+            champion.generation = None;
+            champion.walks = 1;
+            champion.scoring = SCORING;
+        }
         Ok(champion)
     }
 
@@ -246,6 +264,7 @@ impl HallOfFame {
                 fitness: Some(best.fitness),
                 generation: Some(generation),
                 walks: 1,
+                scoring: SCORING,
             });
         }
     }
@@ -580,6 +599,7 @@ mod tests {
             fitness: Some(fitness),
             generation: Some(1),
             walks,
+            scoring: SCORING,
         };
         hall.offer(entry(&lucky, 2.0, 1));
         hall.offer(entry(&steady, 1.5, 1));
@@ -613,6 +633,49 @@ mod tests {
         assert!(Champion::all_from_json("[1, 2]").is_err());
     }
 
+    /// A champion keeps its score only under the formula that gave it: one
+    /// saved under an older formula, or before formulas were numbered,
+    /// arrives as an imported robot and takes no scored place in the hall.
+    #[test]
+    fn a_champion_scored_by_another_formula_arrives_unscored() {
+        let scored = |scoring| Champion {
+            genotype: hexapod(21),
+            fitness: Some(10.84),
+            generation: Some(99),
+            walks: 3,
+            scoring,
+        };
+        let current = Champion::from_json(&scored(SCORING).to_json()).expect("imports");
+        assert_eq!(current.fitness, Some(10.84));
+        assert_eq!((current.generation, current.walks), (Some(99), 3));
+
+        let older = Champion::from_json(&scored(SCORING - 1).to_json()).expect("imports");
+        assert_eq!((older.fitness, older.generation), (None, None));
+        assert_eq!((older.walks, older.scoring), (1, SCORING));
+        assert_eq!(older.label(), "imported");
+
+        // A save from before formulas were numbered names none.
+        let mut json: serde_json::Value =
+            serde_json::from_str(&scored(SCORING).to_json()).expect("json");
+        json.as_object_mut().expect("an object").remove("scoring");
+        let unnumbered = Champion::from_json(&json.to_string()).expect("imports");
+        assert_eq!(unnumbered.fitness, None);
+
+        // Unscored, it stands behind every scored champion, whatever it
+        // scored once.
+        let mut hall = HallOfFame::default();
+        hall.offer(older);
+        hall.offer(Champion {
+            genotype: hexapod(22),
+            fitness: Some(0.5),
+            generation: Some(1),
+            walks: 1,
+            scoring: SCORING,
+        });
+        assert_eq!(hall.champions()[0].fitness, Some(0.5));
+        assert_eq!(hall.champions()[1].fitness, None);
+    }
+
     /// An imported robot loses its identity, so it never takes the place
     /// of the session's own robot with that number; the hall holds a robot
     /// once.
@@ -625,6 +688,7 @@ mod tests {
             fitness: None,
             generation: None,
             walks: 1,
+            scoring: SCORING,
         };
         let imported = Champion::from_json(&saved.to_json()).expect("imports");
         assert_eq!(imported.genotype.id, 0);
@@ -642,6 +706,7 @@ mod tests {
             fitness: Some(0.8),
             generation: Some(3),
             walks: 1,
+            scoring: SCORING,
         });
         assert_eq!(hall.champions().len(), 2);
         assert_eq!(hall.champions()[1].label(), "imported");
@@ -676,6 +741,7 @@ mod tests {
             fitness: Some(1.5),
             generation: Some(9),
             walks: 4,
+            scoring: SCORING,
         };
         let page = "https://example.org/lab/";
         let link = champion.share_link(page);
@@ -711,6 +777,7 @@ mod tests {
             fitness: None,
             generation: None,
             walks: 1,
+            scoring: SCORING,
         });
         hall.offer_best(0, &[phenotype(0.5, 5)]);
         assert_eq!(hall.champions()[0].fitness, Some(0.5));
@@ -728,6 +795,7 @@ mod tests {
             fitness: Some(1.25),
             generation: Some(7),
             walks: 3,
+            scoring: SCORING,
         };
         let back = Champion::from_json(&champion.to_json()).expect("reads back");
         assert_eq!(back.fitness, Some(1.25));

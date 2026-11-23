@@ -13,7 +13,7 @@ Built with [Bevy](https://bevyengine.org/) and [Avian3D](https://github.com/Jond
 - **Joints**: driven hinges and sliders, passive ball joints with twist and swing limits, and welds.
 - **Terrain**: the flat floor, or rough (bumps up to 20 cm) or hilly (hills up to 3 m) ground from [bevy_symbios_ground](https://github.com/TheJanusStream/bevy_symbios_ground), laid afresh each generation from the run's seed and the generation number, so no gait wins by fitting one patch of ground and runs with the same seed walk the same grounds. Heights and bounce are measured above the ground under the body.
 - **Two tasks**: walk forward, or walk to targets whose bearing the brain reads, turning both ways between them with an evolved steering reflex (targets drawn anew for every leg of the walk, or one placed by the user in the window). See [Walking to a target](#walking-to-a-target).
-- **Anti-"vibrobot" fitness**: forward displacement (or progress toward the target) times seven quality factors (posture, smoothness, control jerk, body jerk, a minimum speed, foot step cycles, centre-of-mass bounce), so robots that slide by vibrating score near zero.
+- **Anti-"vibrobot" fitness**: forward displacement (or progress toward the target) times six gates (posture, steady commands, body jerk, a minimum speed, foot step cycles, centre-of-mass bounce): a robot that walks keeps nearly nine tenths of its distance, one that slides by vibrating scores nothing. See [Fitness](#fitness).
 - **Live UI**: an egui panel with algorithm selection, parameter sliders, fitness graphs, the Pareto front, the quality-diversity archives and the parents' spread. Click a robot to inspect its body, brain and live inputs.
 - **Break a leg**: lame any robot from its inspector (its leg's joints go limp) to see how its gait copes, or (experimental) evolve with every robot missing a random leg. See [Leg damage](#leg-damage).
 - **Hall of fame**: the best robots, kept between sessions, to watch walking on their own, share as a link, copy or save as JSON, import (pasted, or dropped onto the window on the desktop), or send back into evolution, and a race of the run's generations side by side. See [Hall of fame](#hall-of-fame).
@@ -36,7 +36,7 @@ Evolution starts as soon as the window opens; **Restart evolution** starts over.
 cargo run --release --example evolve -- --generations 30 --seed 1
 ```
 
-One row per generation (best and mean fitness, the parent pool's best, the furthest robot, explosions, the pool's distinct bodies and its oldest body's age). Options: `--population`, `--duration`, `--algorithm simple|nsga2|map-elites|cvt|novelty|dns`, `--descriptor gait|body|body-gait`, `--terrain flat|rough|hilly`, `--task forward|target`, `--brain hyperneat|direct|supg`, `--mutation-rate`, `--parent-share F`, `--retests N` (see [Breeding](#breeding)), `--vary-body-or-brain on|off`, `--protect-new-bodies on|off`, `--leg-damage on|off`, `--tilt on|off`, `--import PATH` (a saved robot joins the first generation; repeatable), `--save-best PATH` (the run's best robot as JSON), `--save-hall PATH` (the hall of fame as JSON), `--fresh N` (at the end, walk the hall's best four again under N fresh conditions: their scores may have been lucky), `--score PATH` (instead of evolving, score saved robots under fresh conditions; repeatable), `--csv PATH`. From code, `symbios_robot_lab::headless::HeadlessLab` runs the same loop.
+One row per generation (best and mean fitness, the parent pool's best, the furthest robot, explosions, the pool's distinct bodies and its oldest body's age). Options: `--population`, `--duration`, `--algorithm simple|nsga2|map-elites|cvt|novelty|dns`, `--descriptor gait|body|body-gait`, `--terrain flat|rough|hilly`, `--task forward|target`, `--brain hyperneat|direct|supg`, `--mutation-rate`, `--parent-share F`, `--retests N` (8 by default; see [Breeding](#breeding)), `--vary-body-or-brain on|off`, `--protect-new-bodies on|off`, `--leg-damage on|off`, `--tilt on|off`, `--import PATH` (a saved robot joins the first generation; repeatable), `--save-best PATH` (the run's best robot as JSON), `--save-hall PATH` (the hall of fame as JSON), `--fresh N` (at the end, walk the hall's best four again under N fresh conditions: their scores may have been lucky), `--score PATH` (instead of evolving, score saved robots under fresh conditions; repeatable), `--walks PATH` (with `--fresh` or `--score`: every fresh walk as a CSV row, its score and what the score was made from, with the robot's mass, size, driven joints and feet, to judge robots by other measures than the fitness that bred them), `--csv PATH`. From code, `symbios_robot_lab::headless::HeadlessLab` runs the same loop.
 
 ### Web (WASM)
 
@@ -92,8 +92,46 @@ Every generation lasts a fixed number of physics steps (default 15 simulated sec
 
 1. **Spawn**: each agent's L-System genotype is derived into a body, and its brain is compiled into a feed-forward network for that body (see [Brains](#brains)).
 2. **Evaluate**: every fixed step, sensors fill the brain's inputs, the network drives the joint motors, and metrics accumulate. The first third of the generation is settling and is not measured.
-3. **Score**: the walker fitness above; NSGA-II adds the inverse Cost of Transport as a second objective. Robots that explode score below every intact one.
+3. **Score**: the walker [fitness](#fitness); NSGA-II adds an economy objective. Robots that explode score below every intact one.
 4. **Breed**: parents are selected by the active algorithm, and each child varies its body or its brain (see [Breeding](#breeding)); a tenth of each generation is fresh bodies from the [body plans](#body-plans), and the best parents can walk again in children's places.
+
+### Fitness
+
+A walk's fitness is the distance it covers, forward or toward its target, times six factors between 0 and 1. Each factor is a gate against one way of getting about that is not walking. A robot that walks passes them all near 1 (champions keep nearly nine tenths of their distance), so among walkers the fitness is very nearly the metres walked.
+
+| Gate | Stops |
+| --- | --- |
+| Posture | tipping and wobbling: the spread of the body's uprightness, 0 at 0.4 |
+| Steady commands | vibrating: the joint whose command turns round most often turns more often than a 4 Hz stride; 0 from 8 Hz |
+| Body jerk | flailing: the body's own accelerations |
+| Minimum speed | creeping at under 0.2 m/s |
+| Step cycles | feet that never lift or never land: fewer than three changes per foot |
+| Bounce | sliding flat: under 2 cm of rise and fall |
+
+**Steady commands.** A robot can slide across the floor by shaking its joints: with no term against it, the best robot of 3 runs in 16 flipped every command at every evaluation, and one of them slid at 3 m/s on feet that never left the ground. The gate counts how often each joint's command turns round (comes back from the furthest it went by more than a twentieth of the joint's range) and judges the joint that turns most often. A stride is two turns a cycle whatever its size or shape, and a step is one turn at most, so a stride on the fastest clock a brain can have (4 Hz) costs nothing, and from twice that the fitness is 0. Two things the gate does not see: a ripple of a twentieth of a joint's range or less, which the motors (springs of 5 Hz) all but swallow, and when in the walk the turns fall, so a burst of shaking within the walk's budget passes and it is the bounce and step gates that stop a robot sliding on bursts.
+
+**What it replaced.** The fitness used to multiply by two other factors, the mean squared step and the mean squared second difference of the commands, averaged over the joints. Brains run every second step, so the two measured the same thing, and it was the speed of the joints, not vibration: a full-range 1 Hz stride on every joint kept an eighth of its distance, and one full-range step, as a foot sensor asks for, cost a leg nearly all of it. Evolution answered with long levers on few, slow joints. Champions grew from about 250 kg to 649 kg in 100 generations, a leg with a knee or a slider kept 3 to 8 percent of its distance, and a joint that did nothing thinned the average. Judging the worst joint instead of the average made the tax bite harder (champions walked 13.0 m against 19.0 m). Measuring the distance in body sizes, tried as a cure for the growth, changed nothing once the tax was gone (7.3 body sizes walked against 7.5).
+
+**Economy.** NSGA-II's second objective is how little the joints move for the ground covered: the radians every hinge turned through, each counted as one body size of lever, and the metres every slider slid, per metre walked. Neither a body's weight nor its size is a way to score on it. The lab's former estimate of a Cost of Transport (5000 N m for every radian of hinge, over weight times distance) called a heavier body more efficient for the same motion. The Cost of Transport from the work the motors really did (each motor's torque times the angle its hinge turned through, as the physics reports it) is shown in a robot's inspector and is no objective: a joint twitching unloaded costs next to no work, so it does not ask for calm joints.
+
+Measured over 16 seeds of 100 generations with each candidate, each run's best four robots walking again under 8 fresh conditions (the plans start at about 250 kg): with this objective champions walked 23.7 m and weighed 266 kg; with the former estimate 21.9 m and 371 kg; with the motors' real work 16.1 m and 273 kg; and with no second objective at all (SimpleGA) 15.2 m, on five times the joint travel per metre, one fresh walk in eleven ending in a broken robot.
+
+**Measured.** Against the earlier formula with the same body plans, over 16 seeds of 100 generations, each run's best four robots walking again under 8 fresh conditions (10 measured seconds a walk, paired by seed):
+
+| | earlier formula | this one |
+| --- | --- | --- |
+| Flat floor, distance | 19.0 m | 23.7 m (+4.6, p = 0.07) |
+| Flat floor, distance in body sizes | 6.1 | 10.1 (p < 0.01) |
+| Rough ground, distance | 14.3 m | 23.7 m (+9.5, p < 0.001) |
+| Champion's weight (the plans start at about 250 kg) | 649 kg | 266 kg |
+| Furthest robot of generation 30 | 8.6 m | 16.7 m |
+| Motor work per walk | 84 kJ | 141 kJ |
+| Recorded score kept under fresh conditions | 99% | 89% |
+| Robots culled per generation, flat and rough | 2.4 and 1.6 | 3.5 and 1.8 |
+
+The earlier formula's champions stride at their clock's 1 Hz on bodies grown large, and repeat a walk exactly; the present ones are light, stride faster, work harder and vary from walk to walk, which is why the best parents now walk again (see [Breeding](#breeding)). Three of the earlier 16 champions had grown a third pair of legs, none of the present ones on the flat floor and one on rough ground: nothing in the fitness pays for a leg that does not carry the robot further, and the plans' stiff legs do not. What the fitness no longer does is price out legs that could (see [Body plans](#body-plans)).
+
+Scores quoted elsewhere in this README were measured with the earlier formula and compare only with one another.
 
 ### Brains
 
@@ -109,15 +147,17 @@ Measured over 32 seeds (30 generations, NSGA-II keeping all 64 parents), the cha
 
 Every genotype carries its body (the L-system, its seed and derivation steps), its brain (the NEAT genome) and its clock's frequency. A child crosses its two parents and mutates the result, but by default only one half of it: half the children cross and mutate the bodies and keep the fitter parent's brain, the other half keep that parent's body and cross and mutate the brains. A new body is first tried with a brain that already walks, and a new brain on a body it was bred for. Measured over 32 seeds with NSGA-II, this beat changing both at once by +0.50 in the pool's best fitness at 30 generations (p = 0.05) and +0.64 at 100, and halved the robots the physics blew apart.
 
-**Parents kept** (NSGA-II, SimpleGA, Dominated Novelty Search) is the share of a generation kept as parents: fewer breed from the best more often, more keep more kinds of body. **Parents walking again** clones the best parents by average score into the next generation, in children's places, and adds each new walk to their average, which the hall of fame shows with the walks behind it. Conditions change between generations (every robot walks from its own spot, and on new ground or toward new targets where asked), so one walk can flatter a robot. Measured over 32 seeds with NSGA-II, each run's hall champions walking again as clones under 8 fresh conditions (the share of their recorded score they kept in brackets):
+**Parents kept** (NSGA-II, SimpleGA, Dominated Novelty Search) is the share of a generation kept as parents: fewer breed from the best more often, more keep more kinds of body. **Parents walking again** clones the best parents by average score into the next generation, in children's places, and adds each new walk to their average, which the hall of fame shows with the walks behind it. Conditions change between generations (every robot walks from its own spot, and on new ground or toward new targets where asked), so one walk can flatter a robot. Measured under the lab's earlier fitness over 32 seeds with NSGA-II, each run's hall champions walking again as clones under 8 fresh conditions (the share of their recorded score they kept in brackets):
 
 | | flat, 30 generations | flat, 100 | hills, 30 |
 | --- | --- | --- | --- |
 | all 64 parents kept | 1.86 (82%) | 3.48 (73%) | 1.09 (56%) |
-| half kept (the default) | 2.29 (81%) | 4.17 (81%) | 1.17 (52%) |
+| half kept | 2.29 (81%) | 4.17 (81%) | 1.17 (52%) |
 | half kept, 8 walking again | 2.13 (91%) | 3.89 (90%) | 1.41 (76%) |
 
-Keeping half gained +0.43 at 30 generations (p = 0.08) and +0.70 at 100 (p = 0.045), and over 16 seeds it gained with SimpleGA (+0.52) and Dominated Novelty Search (+0.22) too, keeping half as many kinds of body. Walking again keeps the hall honest and gained on hills (+0.24 over half alone, p = 0.14), but the children it displaces cost on the flat floor (-0.16 and -0.29, neither significant): it is an option for changing conditions, off by default.
+Keeping half gained +0.43 at 30 generations (p = 0.08) and +0.70 at 100 (p = 0.045), and over 16 seeds it gained with SimpleGA (+0.52) and Dominated Novelty Search (+0.22) too, keeping half as many kinds of body. Half is the default. Walking again kept the hall honest and gained on hills (+0.24 over half alone, p = 0.14), but the children it displaces cost on the flat floor (-0.16 and -0.29, neither significant), and it was off by default.
+
+Under the present [fitness](#fitness) gaits no longer run on the clock alone and a walk's score varies (by 4 to 7 percent for most champions, far more for a few), so 8 parents walk again by default. Over 16 seeds of 100 generations on the flat floor, champions kept 89% of their recorded score under fresh conditions against 70% with none walking again (p = 0.01), broke in 3% of their fresh walks against 9%, and walked as well for it (20.4 against 20.6, failed walks counted as 0).
 
 **Protect new bodies** (NSGA-II) adds Cheney et al.'s morphological innovation protection (2018): every body counts the generations it has been in the gene pool, and youth becomes a third objective, so a new body has a few generations to tune its brain before it must outwalk bodies whose brains have been tuned for many. Over 100 generations it kept more and younger bodies (48 distinct in the pool against 36) and closed most of a slower start on varying alone (-0.42 at 30 generations, -0.16 at 100). The paper saw its gains over thousands of generations, so it is an option for long runs and for body diversity.
 
@@ -147,6 +187,8 @@ The best walking robot of every generation is offered to the hall, which keeps t
 - **bred**: it joins the next generation (or a restarted run's first) as a body new to that run.
 
 A robot's JSON (or a bare genotype, or a whole saved hall) or a share link can be imported by pasting it into the window, a JSON file by dropping it onto the window on the desktop, or with `--import` in headless runs. An imported robot must grow a body with driven joints, and a direct brain that does not fit its body or the task is resized. It enters the hall once, without the identity number it had where it came from.
+
+A saved champion carries the number of the fitness formula that scored it. One scored by another formula than the lab's present one (a hall kept from an earlier version, say) comes back as an imported robot, without its score: the hall ranks by score, and scores of two formulas do not compare. Its body and brain are untouched; send it into evolution and it earns a score again.
 
 **Race of generations**: the run keeps its best robot as of generation 0 and every 10th generation since (past 16 kept, the stride doubles and every other one leaves), and **Race** sets up to six of them walking side by side in lanes: generation 0, the latest, and four spread between (all it has while the run is young). The hall shows the standings live, each racer's distance from where it started. Racers, like watched robots, are never scored.
 
@@ -181,11 +223,11 @@ They are starting points for evolution, not finished walkers, and they are writt
 - rules compute nothing but the trunk's count-down, since mutation flips `*` to `/` and `+` to `-` wherever it finds them, and no plan uses a turn together with its opposite, since mutation swaps those only where both occur;
 - the numbers that must hold (90 degrees, a threshold of 150) are too large for mutation's nudges to move.
 
-Measured over 16 seeds of 100 generations, by each run's best four robots walking again under 8 fresh conditions: 10.84 against 3.89 for the former catalogue of eight hand-built walkers (+6.94 paired by seed), and on rough ground 7.69 against 2.92. In 3 of the 16 runs the best robot had grown a third or a fourth pair of legs on a longer trunk; nine of the former catalogue's 16 runs ended on a body cut down to five or six motors. As many robots are culled as before (2.4 per generation), most of them late in a run.
+Measured under the lab's earlier fitness over 16 seeds of 100 generations, by each run's best four robots walking again under 8 fresh conditions: 10.84 against 3.89 for the former catalogue of eight hand-built walkers (+6.94 paired by seed), and on rough ground 7.69 against 2.92. In 3 of the 16 runs the best robot had grown a third or a fourth pair of legs on a longer trunk; nine of the former catalogue's 16 runs ended on a body cut down to five or six motors. As many robots are culled as before (2.4 per generation), most of them late in a run.
 
 Two findings shaped the catalogue more than any grammar, both from trials with earlier drafts of these plans:
 
-- **The fitness pays for few motors.** A leg with a knee or a slider near its foot sensor is steered by that sensor in steps, and the control-jerk factor left such legs 3 to 8 percent of their distance. Bodies with one motor per leg learn to walk in a few generations, so the plans have stiff legs, and what evolution adds is legs and trunk.
+- **The fitness of the time paid for few motors.** A leg with a knee or a slider near its foot sensor is steered by that sensor in steps, and the tax the fitness then put on joint speed (see [Fitness](#fitness)) left such legs 3 to 8 percent of their distance. Bodies with one motor per leg learned to walk in a few generations, so the plans have stiff legs, and what evolution adds is legs and trunk. The present fitness no longer prices such legs out: bred alone for twelve generations, the drafts with kneed and with sliding legs score 5.9 and 6.1 where the plans score 8.2 (0.26 and 0.24 against 1.6 before), so they are worth another look.
 - **Plans share a gene pool, and a fast starter takes it over.** A crab on six stiff legs scored twice the skink's fitness after ten generations, won all 16 runs it shared with the skink, and ended them at 4.67. A seal on two legs with knees won 15 of 16 and ended at 3.48. So the plans are one family: any two cross into a body on the same stiff legs.
 
 `cargo run --release --example bodyplans -- mutate` measures what breeding makes of each plan (or of any `.lsys` file given with `--file`): how many mutants keep their build, change it or are lost. Its other modes list a plan's parts and joints, cross plans, walk mutants to see which the physics culls, and print what a saved robot's fitness is made of. On the desktop, `assets/morphologies/example_walker.lsys` joins the three plans: a copy of the skink to edit.

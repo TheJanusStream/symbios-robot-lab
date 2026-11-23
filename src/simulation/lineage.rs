@@ -102,6 +102,7 @@ mod tests {
     use super::*;
     use crate::core::config::{BrainEncoding, Senses};
     use crate::core::presets::MORPHOLOGY_POOL;
+    use crate::simulation::fitness::SCORING;
     use crate::simulation::lifecycle::fresh_agent;
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
@@ -120,6 +121,7 @@ mod tests {
             fitness: Some(fitness),
             generation: None,
             walks: 1,
+            scoring: SCORING,
         }
     }
 
